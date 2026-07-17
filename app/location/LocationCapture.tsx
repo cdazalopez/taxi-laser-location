@@ -139,7 +139,13 @@ export default function LocationCapture({ contactId }: { contactId: string }) {
         </div>
       </div>
 
-      <footer className="mt-auto pt-12 text-xs text-brand-white/40">
+      <p className="mt-10 max-w-xs text-center text-xs leading-relaxed text-brand-white/45">
+        Tu ubicación solo se usa para este viaje.
+        <br />
+        Your location is only used for this ride.
+      </p>
+
+      <footer className="mt-auto pt-8 text-xs text-brand-white/40">
         Taxi Laser LLC
       </footer>
     </main>
