@@ -1,3 +1,3 @@
 // Make.com webhook that receives the captured location / address payload.
 export const WEBHOOK_URL =
-  "https://hook.us2.make.com/p0ow60b1f6j0pfkxo62v1fy46ifjvubi";
+  "https://hook.us2.make.com/h3kwnlpkfh1ubls185gxq8g1pfijmi0t";
