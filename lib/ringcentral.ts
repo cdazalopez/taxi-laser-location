@@ -81,8 +81,12 @@ export async function getRingCentralToken(): Promise<string> {
 
 /**
  * Envía un SMS vía RingCentral desde `RC_ACCOUNT_PHONE`.
- * POST {server}/restapi/v1.0/account/~/extension/~/sms
+ * POST {server}/restapi/v1.0/account/~/extension/{ext}/sms
  *   body: { from: { phoneNumber }, to: [{ phoneNumber }], text }
+ *
+ * `ext` = RC_EXTENSION_ID (la extensión DUEÑA del número, ej. la 102 que recibe
+ * los SMS del MainCompanyNumber) o `~` (la del JWT) si no se configura. El número
+ * `from` debe pertenecer a esa extensión o RC responde 403 MSG-304.
  */
 export async function sendRingCentralSms(
   to: string,
@@ -90,11 +94,12 @@ export async function sendRingCentralSms(
 ): Promise<{ ok: boolean; status: number; response: unknown }> {
   const from = process.env.RC_ACCOUNT_PHONE;
   if (!from) throw new Error("RC_ACCOUNT_PHONE no configurado");
+  const ext = process.env.RC_EXTENSION_ID ?? "~";
 
   const token = await getRingCentralToken();
 
   const res = await fetch(
-    `${RC_SERVER}/restapi/v1.0/account/~/extension/~/sms`,
+    `${RC_SERVER}/restapi/v1.0/account/~/extension/${ext}/sms`,
     {
       method: "POST",
       headers: {
