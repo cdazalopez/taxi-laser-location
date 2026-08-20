@@ -93,9 +93,13 @@ default de GHL). El número `+14045968232` NUNCA se registra en Phone Numbers de
 GHL — todo entra/sale por RingCentral.
 
 - `conversationProviderId`: `6a870e6d202787fbd6fb7ccc`
-- El **inbound** manda ese id en el body (obligatorio en modo custom, si no el
-  mensaje entrante falla o cae en el canal equivocado) — cableado en
-  `lib/ghl.ts` → `addGhlInboundSms` vía `GHL_CONVERSATION_PROVIDER_ID`.
+- **⚠ Actualmente DESHABILITADO en el inbound.** El `GHL_TOKEN` no tiene acceso a
+  ese provider → GHL respondía `401 CONVERSATIONS_MSG_PROVIDER_NO_ACCESS` y el
+  mensaje entrante no se registraba. Por eso el inbound va al **canal SMS default
+  de GHL** (sin `conversationProviderId`). El adjuntar el id está detrás del flag
+  `GHL_USE_CONVERSATION_PROVIDER=on` en `lib/ghl.ts` → `addGhlInboundSms`.
+  Para re-activar el canal custom hay que primero darle acceso al token
+  (token OAuth de la app dueña del provider, scope `conversations/message.write`).
 
 ## Auth RingCentral
 
@@ -115,7 +119,8 @@ hasta ~30s antes de expirar.
 | `RC_SERVER_URL` | *(opcional)* | Default `https://platform.ringcentral.com` |
 | `GHL_TOKEN` | *(secreto)* | ✅ |
 | `GHL_LOCATION_ID` | `FmXJ8J0Ccird2AKk8pzQ` | default en código |
-| `GHL_CONVERSATION_PROVIDER_ID` | `6a870e6d202787fbd6fb7ccc` | ✅ |
+| `GHL_CONVERSATION_PROVIDER_ID` | `6a870e6d202787fbd6fb7ccc` | ✅ (solo se usa si el flag está on) |
+| `GHL_USE_CONVERSATION_PROVIDER` | `on` para adjuntar el provider al inbound | ⚠ OFF (token sin acceso al provider) |
 | `GHL_WEBHOOK_PUBLIC_KEY` | *(opcional)* | override de la public key (pruebas) |
 
 ## Testing
@@ -130,22 +135,28 @@ hasta ~30s antes de expirar.
 
 **Hecho (todo en `main`, desplegado en prod, healthchecks 200):**
 - Endpoints entrante + saliente implementados y verificados.
-- Suscripción de RingCentral entrante **activa** (ver arriba).
+- Suscripción de RingCentral entrante **activa**, atada a la ext 102 (ver arriba).
+- **Inbound end-to-end REAL confirmado**: SMS real al `+14045968232` → webhook
+  disparó (visible en logs de Vercel) → mensaje registrado en GHL (canal default).
 - Env vars configuradas en Vercel (Production + Preview).
-- Verificación de firma 401 confirmada en producción.
+- Verificación de firma 401 (saliente) confirmada en producción.
+
+**Diagnóstico clave (causa raíz del webhook que no llegaba):** la 1ª suscripción
+se ató a la extensión del JWT (`62611333007`), que no recibe tráfico. Los SMS del
+`MainCompanyNumber` caen en la ext de usuario **102 (`62611342007`)**. Fix: recrear
+la suscripción con `RC_EXTENSION_ID=62611342007`.
 
 **Pendiente (manual, del lado de las plataformas):**
-1. Configurar el **Conversation Provider en GHL** con el Delivery URL saliente
-   (`.../api/webhooks/ghl-outbound`) si aún no está.
-2. **Prueba end-to-end real**: (a) mandar un SMS al `+14045968232` y ver que
-   aparezca en el tab custom de GHL; (b) responder desde GHL y ver que llegue al
-   cliente + que el estado cambie a `delivered`.
-3. En el primer mensaje real, revisar los logs de Vercel: el endpoint saliente
-   loguea el payload completo (`[ghl-outbound] Payload verificado: ...`). Si los
-   nombres de campos reales de GHL difieren, ajustar `extractToPhone` /
-   `extractText` / `messageId` en `app/api/webhooks/ghl-outbound/route.ts`.
-4. Borrar `~/Downloads/rc-credentials.json` (tiene clientSecret + jwt en claro;
-   ya están en Vercel).
+1. **Acceso del token al Conversation Provider** (para re-activar el canal custom):
+   dar al `GHL_TOKEN` acceso al provider `6a870e6d202787fbd6fb7ccc` (token OAuth de
+   la app dueña del provider, scope `conversations/message.write`), luego poner
+   `GHL_USE_CONVERSATION_PROVIDER=on` y redeploy. Hoy el inbound usa el canal SMS
+   default (funciona, pero no en el tab custom).
+2. **Probar el saliente end-to-end**: responder desde GHL y ver que el SMS llegue
+   al cliente vía RingCentral + estado `delivered`. En el 1er mensaje real revisar
+   `[ghl-outbound] Payload verificado: ...` en Vercel y ajustar
+   `extractToPhone`/`extractText`/`messageId` si los campos de GHL difieren.
+3. Borrar `~/Downloads/rc-credentials.json` (clientSecret + jwt en claro; ya en Vercel).
 
 ## Infra / repo
 
