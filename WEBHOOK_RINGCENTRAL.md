@@ -16,6 +16,25 @@ deployment, que tiene Deployment Protection y responde 302).
 Cada endpoint expone además un `GET` de healthcheck que responde
 `{ "ok": true }`.
 
+## Suscripción de RingCentral (SMS entrante)
+
+Registrada con `scripts/register-rc-webhook.mjs` (JWT auth flow).
+
+| Campo | Valor |
+| --- | --- |
+| Subscription ID | `29ae3c9e-93c6-4899-8de3-f142f9f49d0d` |
+| Status | `Active` |
+| Event filter | `/restapi/v1.0/account/~/extension/~/message-store/instant?type=SMS` |
+| Address | `https://taxilaser.neuralpreneur.com/api/webhooks/ringcentral-sms` |
+| Expira | 2036-08-17 |
+
+> **Requisito previo**: la app de RingCentral (Message API, Client ID
+> `8ljY2zqRERFdOnbLEdoKvm`) necesita el scope **"Webhook Subscriptions"**
+> (`SubscriptionWebhook`); sin él, la creación falla con `403 SUB-528`.
+>
+> Para re-registrar / listar / recrear la suscripción:
+> `RC_CLIENT_ID=... RC_CLIENT_SECRET=... RC_JWT=... node scripts/register-rc-webhook.mjs [--list] [--force]`
+
 ## Endpoint 1 — Entrante: `POST /api/webhooks/ringcentral-sms`
 
 SMS del cliente → RingCentral → GHL.
