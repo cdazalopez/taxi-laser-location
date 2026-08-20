@@ -2,8 +2,9 @@
 /**
  * Registra una suscripción webhook en RingCentral para SMS ENTRANTES.
  *
- * Autentica con la app "Message API" vía OAuth Password flow (ROPC) usando las
- * credenciales de la cuenta de Taxi Laser, y crea una suscripción WebHook para:
+ * Autentica con la app "Message API" vía OAuth JWT flow (server-to-server) con
+ * el JWT credential de la RC Developer Console, y crea una suscripción WebHook
+ * para:
  *   /restapi/v1.0/account/~/extension/~/message-store/instant?type=SMS
  * apuntando a nuestro endpoint de Vercel.
  *
@@ -12,8 +13,8 @@
  * lo devuelve, así que la suscripción queda activa automáticamente.
  *
  * Uso:
- *   RC_CLIENT_ID=... RC_CLIENT_SECRET=... RC_USERNAME=+1404... \
- *   RC_PASSWORD=... [RC_EXTENSION=101] node scripts/register-rc-webhook.mjs
+ *   RC_CLIENT_ID=... RC_CLIENT_SECRET=... RC_JWT=... \
+ *   node scripts/register-rc-webhook.mjs
  *
  * Flags:
  *   --list    Solo lista las suscripciones existentes y sale (no crea nada).
@@ -46,21 +47,17 @@ function requireEnv(name) {
   return v;
 }
 
-/** OAuth Password flow → access token. */
+/** OAuth JWT flow (server-to-server) → access token. */
 async function getToken() {
   const clientId = requireEnv("RC_CLIENT_ID");
   const clientSecret = requireEnv("RC_CLIENT_SECRET");
-  const username = requireEnv("RC_USERNAME");
-  const password = requireEnv("RC_PASSWORD");
-  const extension = process.env.RC_EXTENSION; // opcional
+  const jwt = requireEnv("RC_JWT");
 
   const basic = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 
   const body = new URLSearchParams();
-  body.set("grant_type", "password");
-  body.set("username", username);
-  body.set("password", password);
-  if (extension) body.set("extension", extension);
+  body.set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer");
+  body.set("assertion", jwt);
 
   const res = await fetch(`${SERVER}/restapi/oauth/token`, {
     method: "POST",
@@ -74,7 +71,7 @@ async function getToken() {
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    console.error(`✖ OAuth password flow falló (${res.status}):`);
+    console.error(`✖ OAuth JWT flow falló (${res.status}):`);
     console.error(JSON.stringify(data, null, 2));
     process.exit(1);
   }
