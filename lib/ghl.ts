@@ -1,5 +1,5 @@
 import { redisCmd } from "@/lib/cache";
-import { getGhlOAuthToken } from "@/lib/ghl-oauth";
+import { getGhlLocationToken } from "@/lib/ghl-oauth";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID ?? "FmXJ8J0Ccird2AKk8pzQ";
@@ -14,7 +14,7 @@ const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID ?? "FmXJ8J0Ccird2AKk8pzQ";
  */
 async function providerAuthToken(): Promise<string> {
   if (process.env.GHL_USE_CONVERSATION_PROVIDER === "on") {
-    return getGhlOAuthToken();
+    return getGhlLocationToken();
   }
   const token = process.env.GHL_TOKEN;
   if (!token) throw new Error("GHL_TOKEN no configurado");
