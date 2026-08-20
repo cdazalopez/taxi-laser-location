@@ -23,14 +23,18 @@ export function buildMessage(
   const make = (data.vehicle_make ?? "").toString().trim();
   const color = (data.vehicle_color ?? "").toString().trim();
   const plate = (data.vehicle_plate ?? "").toString().trim();
-  const fare = formatFare(data.fare);
+  const fareNum = parseFare(data.fare);
 
   switch (event) {
     case "waiting_for_passenger":
       return `Su Taxi ${make} ${color} con placa ${plate} ha llegado / ${CONTACT}`;
 
     case "job_marked_as_delivered":
-      return `Su servicio realizado por la unidad ${make} ha finalizado por $${fare} / ${CONTACT}`;
+      // Solo se muestra el precio si viene una tarifa válida > 0; si no, se omite
+      // el "$0.00" que se veía roto para el cliente.
+      return fareNum && fareNum > 0
+        ? `Su servicio realizado por la unidad ${make} ha finalizado por $${fareNum.toFixed(2)} / ${CONTACT}`
+        : `Su servicio realizado por la unidad ${make} ha finalizado / ${CONTACT}`;
 
     case "cancelled_by_company":
       return `Su servicio ha sido cancelado, para solicitarlo nuevamente por favor llame o envie un SMS al ${CONTACT}`;
@@ -69,7 +73,7 @@ export function buildTemplate(
     case "waiting_for_passenger":
       // Cuerpo: "Su Taxi {{1}} {{2}} con placa {{3}} ha llegado / 404-596-8232"
       return {
-        name: process.env.WHATSAPP_TEMPLATE_ARRIVAL ?? "taxi_ha_llegado",
+        name: process.env.WHATSAPP_TEMPLATE_ARRIVAL ?? "taxi_ha_llegado_v2",
         language,
         params: [make, color, plate],
       };
@@ -95,9 +99,15 @@ export function buildTemplate(
   }
 }
 
-function formatFare(fare: string | number | null | undefined): string {
-  if (fare === null || fare === undefined || fare === "") return "0.00";
+/** Parsea la tarifa a número; devuelve null si viene vacía o no es numérica. */
+function parseFare(fare: string | number | null | undefined): number | null {
+  if (fare === null || fare === undefined || fare === "") return null;
   const n = typeof fare === "number" ? fare : parseFloat(String(fare).replace(/[^0-9.]/g, ""));
-  if (Number.isNaN(n)) return String(fare);
-  return n.toFixed(2);
+  return Number.isNaN(n) ? null : n;
+}
+
+/** Formatea la tarifa para plantillas (que sí llevan el {{fare}} como variable). */
+function formatFare(fare: string | number | null | undefined): string {
+  const n = parseFare(fare);
+  return n === null ? "0.00" : n.toFixed(2);
 }

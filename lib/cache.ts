@@ -1,0 +1,67 @@
+/**
+ * Caché job_id → teléfono sobre Redis (Upstash REST API).
+ *
+ * `waiting_for_passenger` trae el teléfono en el webhook y lo guarda; los
+ * eventos posteriores del mismo job (`job_marked_as_delivered`,
+ * `cancelled_by_company`) llegan SIN teléfono y lo recuperan de aquí.
+ *
+ * Soporta los nombres de env de la integración de Vercel (KV_REST_API_*) y los
+ * de Upstash directo (UPSTASH_REDIS_REST_*). Si no hay KV configurado, todas
+ * las funciones hacen no-op silencioso (no rompen el flujo principal).
+ */
+const REST_URL =
+  process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
+const REST_TOKEN =
+  process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+
+/** TTL por defecto: 48h (un viaje se completa mucho antes). */
+const DEFAULT_TTL = 60 * 60 * 48;
+
+export async function redisCmd(args: (string | number)[]): Promise<unknown> {
+  if (!REST_URL || !REST_TOKEN) return null;
+  try {
+    const res = await fetch(REST_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${REST_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(args),
+      // Evita que el Data Cache de Next.js congele las respuestas de Redis.
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      console.error(`[cache] comando falló (${res.status}):`, await res.text());
+      return null;
+    }
+    const data: any = await res.json();
+    return data?.result ?? null;
+  } catch (err) {
+    console.error("[cache] error:", err);
+    return null;
+  }
+}
+
+/** Guarda el teléfono del pasajero para un job (con TTL). */
+export async function cachePhoneForJob(
+  jobId: string,
+  phone: string,
+  ttlSeconds: number = DEFAULT_TTL
+): Promise<void> {
+  if (!jobId || !phone) return;
+  await redisCmd(["SET", `job:${jobId}`, phone, "EX", ttlSeconds]);
+}
+
+/** Recupera el teléfono cacheado para un job, o null si no existe. */
+export async function getCachedPhoneForJob(
+  jobId: string
+): Promise<string | null> {
+  if (!jobId) return null;
+  const result = await redisCmd(["GET", `job:${jobId}`]);
+  return typeof result === "string" && result.length ? result : null;
+}
+
+/** Indica si el KV está configurado (para logging/diagnóstico). */
+export function cacheEnabled(): boolean {
+  return !!(REST_URL && REST_TOKEN);
+}

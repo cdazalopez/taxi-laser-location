@@ -6,8 +6,14 @@ import {
   findGhlContactByPhone,
   upsertGhlContact,
   sendGhlWhatsApp,
+  sendGhlTemplate,
+  addContactToWorkflow,
+  updateContactVehicleFields,
+  isWithin24hWindow,
 } from "@/lib/ghl";
 import { sendWhatsAppText, sendWhatsAppTemplate } from "@/lib/whatsapp";
+import { cachePhoneForJob, getCachedPhoneForJob } from "@/lib/cache";
+import { recordEvent, bumpCounters, type EventRecord } from "@/lib/events";
 
 // Runtime Node.js (no edge) para fetch completo.
 export const runtime = "nodejs";
@@ -72,40 +78,133 @@ async function processEvent(event: string, jobId: string, payload: any) {
 
   // Teléfono del pasajero desde el webhook. Se aceptan varias claves porque el
   // emisor del webhook ha variado (passenger_phone, phone, phone1..phone6).
-  const rawPhone = extractPassengerPhone(payload);
+  // `waiting_for_passenger` lo trae; `delivered`/`cancelled` NO → se recupera
+  // del caché por job_id (lo guardó el waiting_for_passenger del mismo viaje).
+  let rawPhone = extractPassengerPhone(payload);
+  const phoneFromWebhook = !!rawPhone;
+
+  if (!rawPhone && jobId) {
+    const cached = await getCachedPhoneForJob(jobId);
+    if (cached) {
+      rawPhone = cached;
+      console.log(`[taxicaller] Teléfono recuperado de caché (job ${jobId}, ${event})`);
+    }
+  }
+
   const passengerPhone = normalizePhone(rawPhone);
+  const phoneSource: EventRecord["phoneSource"] = phoneFromWebhook
+    ? "webhook"
+    : passengerPhone
+      ? "cache"
+      : "none";
 
   if (!passengerPhone) {
-    console.error(`[taxicaller] Sin teléfono de pasajero para job ${jobId}. Payload:`, payload);
+    console.error(`[taxicaller] Sin teléfono de pasajero para job ${jobId} (${event}). Payload:`, payload);
+    void recordEvent(baseRecord(event, jobId, null, "none", "no_phone"));
     return;
+  }
+
+  // Si el teléfono vino en el webhook, guárdalo para eventos posteriores del
+  // mismo job (no bloquea el envío).
+  if (phoneFromWebhook && jobId) {
+    void cachePhoneForJob(jobId, passengerPhone).catch((err) =>
+      console.error(`[taxicaller] cache SET falló (job ${jobId}):`, err)
+    );
   }
 
   const message = buildMessage(event, vehicleData);
   if (!message) {
     console.error(`[taxicaller] No se generó mensaje para evento "${event}"`);
+    void recordEvent(baseRecord(event, jobId, passengerPhone, phoneSource, "error"));
     return;
   }
 
   const channel = process.env.SEND_CHANNEL ?? "ghl";
-  const result =
+  const sent =
     channel === "meta"
       ? await sendViaMeta(event, vehicleData, passengerPhone, message)
-      : await sendViaGhl(rawPhone ?? passengerPhone, passengerPhone, message, jobId);
+      : await sendViaGhl(event, vehicleData, rawPhone ?? passengerPhone, passengerPhone, message, jobId);
 
-  if (!result) return;
+  const res = sent.result;
+  if (!res) {
+    void recordEvent({
+      ...baseRecord(event, jobId, passengerPhone, phoneSource, "error"),
+      channel: sent.channel,
+      note: sent.note ?? "sin resultado de envío",
+    });
+    return;
+  }
 
-  if (result.ok) {
-    console.log(`[taxicaller] WhatsApp (${channel}) enviado (job ${jobId}, ${event})`);
+  if (res.ok) {
+    console.log(`[taxicaller] WhatsApp (${sent.channel}) enviado (job ${jobId}, ${event})`);
+    // Contadores acumulados históricos (para total enviados + estimación de costo).
+    void bumpCounters(["total", `ch:${sent.channel}`, `ev:${event}`]);
   } else {
     console.error(
-      `[taxicaller] Envío WhatsApp (${channel}) falló (${result.status}) job ${jobId}:`,
-      JSON.stringify(result.response)
+      `[taxicaller] Envío WhatsApp (${sent.channel}) falló (${res.status}) job ${jobId}:`,
+      JSON.stringify(res.response)
     );
   }
+
+  void recordEvent({
+    ...baseRecord(event, jobId, passengerPhone, phoneSource, res.ok ? "sent" : "error"),
+    contactId: sent.contactId,
+    channel: sent.channel,
+    inWindow: sent.inWindow,
+    ghlOk: !!res.ok,
+    ghlStatus: res.status ?? null,
+    messageId: (res.response as any)?.messageId ?? null,
+  });
+}
+
+/** Crea un registro base con los campos comunes. */
+function baseRecord(
+  event: string,
+  jobId: string,
+  phone: string | null,
+  phoneSource: EventRecord["phoneSource"],
+  outcome: EventRecord["outcome"]
+): EventRecord {
+  return {
+    ts: new Date().toISOString(),
+    event,
+    job_id: jobId,
+    phone,
+    phoneSource,
+    contactId: null,
+    channel: null,
+    inWindow: null,
+    outcome,
+    ghlOk: null,
+    ghlStatus: null,
+    messageId: null,
+  };
+}
+
+/** Mapea cada evento a su templateId interno de GHL por env. */
+function templateIdForEvent(event: string): string | undefined {
+  const map: Record<string, string | undefined> = {
+    waiting_for_passenger: process.env.GHL_TEMPLATE_ARRIVAL_ID,
+    job_marked_as_delivered: process.env.GHL_TEMPLATE_DELIVERED_ID,
+    cancelled_by_company: process.env.GHL_TEMPLATE_CANCELLED_ID,
+  };
+  return map[event];
+}
+
+/** Mapea cada evento a un Workflow de GHL (que envía la plantilla) por env. */
+function workflowIdForEvent(event: string): string | undefined {
+  const map: Record<string, string | undefined> = {
+    waiting_for_passenger: process.env.GHL_WORKFLOW_ARRIVAL_ID,
+    job_marked_as_delivered: process.env.GHL_WORKFLOW_DELIVERED_ID,
+    cancelled_by_company: process.env.GHL_WORKFLOW_CANCELLED_ID,
+  };
+  return map[event];
 }
 
 /** Canal GHL: busca/crea el contacto y envía por Conversations (type WhatsApp). */
 async function sendViaGhl(
+  event: string,
+  data: any,
   rawPhone: string,
   normalizedPhone: string,
   message: string,
@@ -114,6 +213,7 @@ async function sendViaGhl(
   // 1. Contacto por teléfono (igual que el TL_04). Se prueba con el valor crudo
   //    y con el normalizado para maximizar coincidencias.
   let contactId: string | null = null;
+  let failReason: string | null = null;
   try {
     const contact =
       (await findGhlContactByPhone(rawPhone)) ??
@@ -123,6 +223,7 @@ async function sendViaGhl(
       console.log(`[taxicaller] Contacto GHL ${contactId} (job ${jobId})`);
     }
   } catch (err) {
+    failReason = `lookup: ${String((err as Error)?.message ?? err).slice(0, 120)}`;
     console.error(`[taxicaller] Búsqueda GHL falló (job ${jobId}):`, err);
   }
 
@@ -132,16 +233,65 @@ async function sendViaGhl(
       contactId = await upsertGhlContact(toE164(normalizedPhone)!);
       console.log(`[taxicaller] Contacto GHL creado ${contactId} (job ${jobId})`);
     } catch (err) {
+      failReason = `upsert: ${String((err as Error)?.message ?? err).slice(0, 120)}`;
       console.error(`[taxicaller] Upsert GHL falló (job ${jobId}):`, err);
     }
   }
 
   if (!contactId) {
     console.error(`[taxicaller] Sin contactId GHL; no se puede enviar (job ${jobId})`);
-    return null;
+    return { result: null, channel: null, contactId: null, inWindow: null, note: failReason };
   }
 
-  return sendGhlWhatsApp(contactId, message);
+  // Guardar marca/color/placa en el contacto (SIEMPRE en el arrival, antes de
+  // decidir el canal) para que la plantilla del Workflow tenga los valores que
+  // mapear. Se espera (await) a que persistan antes de enviar/inscribir.
+  if (event === "waiting_for_passenger") {
+    try {
+      await updateContactVehicleFields(contactId, {
+        make: data.vehicle_make,
+        color: data.vehicle_color,
+        plate: data.vehicle_plate,
+      });
+    } catch (err) {
+      console.error(`[taxicaller] update campos vehículo falló (job ${jobId}):`, err);
+    }
+  }
+
+  // 3. HÍBRIDO: si hay un fallback configurado (workflow o plantilla) para este
+  //    evento, decidir por la ventana de 24h:
+  //      - DENTRO de 24h  → texto libre RICO (marca/color/placa/tarifa).
+  //      - FUERA de 24h   → fallback que SÍ entrega:
+  //           · Workflow de GHL (preferido; envía la plantilla nativamente), o
+  //           · plantilla vía templateId directo.
+  //    Si no hay fallback configurado, siempre texto libre (solo entrega <24h).
+  const workflowId = workflowIdForEvent(event);
+  const templateId = templateIdForEvent(event);
+  if (workflowId || templateId) {
+    // El finalizado SIEMPRE va por plantilla UTILITY (workflow), sin importar la
+    // ventana: la detección de 24h contaba cualquier entrante (incl. SMS) y
+    // producía falsos "dentro de ventana" → el texto libre se caía por >24h.
+    const forceTemplate = event === "job_marked_as_delivered";
+    const inWindow = !forceTemplate && (await isWithin24hWindow(contactId));
+    if (inWindow) {
+      console.log(`[taxicaller] En ventana 24h → texto libre rico (job ${jobId}, ${event})`);
+      const result = await sendGhlWhatsApp(contactId, message);
+      return { result, channel: "ghl-text" as const, contactId, inWindow: true, note: null };
+    }
+    if (workflowId) {
+      console.log(`[taxicaller] Fuera de ventana 24h → workflow ${workflowId} (job ${jobId}, ${event})`);
+      const result = await addContactToWorkflow(contactId, workflowId);
+      return { result, channel: "ghl-workflow" as const, contactId, inWindow: false, note: null };
+    }
+    const useVars = process.env.GHL_TEMPLATE_VARS === "on";
+    const tpl = useVars ? buildTemplate(event, data) : null;
+    console.log(`[taxicaller] Fuera de ventana 24h → plantilla ${templateId} (job ${jobId}, ${event}, vars=${useVars})`);
+    const result = await sendGhlTemplate(contactId, templateId!, tpl?.params);
+    return { result, channel: "ghl-template" as const, contactId, inWindow: false, note: null };
+  }
+
+  const result = await sendGhlWhatsApp(contactId, message);
+  return { result, channel: "ghl-text" as const, contactId, inWindow: null, note: null };
 }
 
 /** Canal Meta directo: plantilla (default) o texto libre según WHATSAPP_MODE. */
@@ -152,12 +302,16 @@ async function sendViaMeta(
   message: string
 ) {
   const mode = process.env.WHATSAPP_MODE ?? "template";
+  let result: { ok: boolean; status: number; response: unknown } | null;
   if (mode === "text") {
-    return sendWhatsAppText(normalizedPhone, message);
+    result = await sendWhatsAppText(normalizedPhone, message);
+  } else {
+    const tpl = buildTemplate(event, data);
+    result = tpl
+      ? await sendWhatsAppTemplate(normalizedPhone, tpl.name, tpl.language, tpl.params)
+      : null;
   }
-  const tpl = buildTemplate(event, data);
-  if (!tpl) return null;
-  return sendWhatsAppTemplate(normalizedPhone, tpl.name, tpl.language, tpl.params);
+  return { result, channel: "meta" as const, contactId: null, inWindow: null, note: null };
 }
 
 /** Extrae el teléfono del pasajero de las posibles claves del webhook. */
