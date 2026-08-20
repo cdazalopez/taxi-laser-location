@@ -56,30 +56,88 @@ SMS del cliente → RingCentral → GHL.
 
 ## Endpoint 2 — Saliente: `POST /api/webhooks/ghl-outbound`
 
-SMS del dispatcher (en GHL) → RingCentral → cliente.
+SMS del dispatcher (en GHL, tab custom del Conversation Provider) → RingCentral
+→ cliente. GHL manda un POST **firmado** (Ed25519) al Delivery URL.
 
-1. GHL dispara el webhook al enviar un SMS. Extrae destinatario (`phone`) y
-   cuerpo (`message`).
-2. Envía el SMS por RingCentral desde `RC_ACCOUNT_PHONE`
-   (`POST /restapi/v1.0/account/~/extension/~/sms`).
-3. Responde `200` al instante; el envío corre en background.
+1. Lee el **body crudo** (`req.text()`) ANTES de parsear (necesario para la firma).
+2. **Verifica la firma Ed25519** del header `X-GHL-Signature` (base64) con la
+   public key de GHL: `crypto.verify(null, bodyBuffer, publicKey, sigBuffer)`.
+   Firma inválida/ausente → **401** y no procesa nada.
+3. Parsea el payload verificado (loguea el payload completo para debug) y valida
+   destinatario (`phone`) + cuerpo (`message`). Falta alguno → **400**.
+4. Envía el SMS por RingCentral desde `RC_ACCOUNT_PHONE`
+   (`sendRingCentralSms()` en `lib/ringcentral.ts`). Se **await**ea el envío.
+5. Confirma el estado a GHL (`updateGhlMessageStatus()` →
+   `PUT /conversations/messages/{messageId}/status`, `delivered` | `failed`).
+6. Responde **200** si el envío fue exitoso, **500** si el envío real falló.
+
+> La public key de GHL está hardcodeada en el route; se puede sobreescribir con
+> `GHL_WEBHOOK_PUBLIC_KEY` para pruebas locales con un par de llaves propio.
+
+### Conversation Provider (GHL)
+
+Canal custom (aparece como tab separado en la conversación, no reemplaza el SMS
+default de GHL). El número `+14045968232` NUNCA se registra en Phone Numbers de
+GHL — todo entra/sale por RingCentral.
+
+- `conversationProviderId`: `6a870e6d202787fbd6fb7ccc`
+- El **inbound** manda ese id en el body (obligatorio en modo custom, si no el
+  mensaje entrante falla o cae en el canal equivocado) — cableado en
+  `lib/ghl.ts` → `addGhlInboundSms` vía `GHL_CONVERSATION_PROVIDER_ID`.
 
 ## Auth RingCentral
 
-OAuth server-to-server. Por defecto grant `client_credentials` (Basic auth con
-Client ID + Client Secret). El access token se cachea en memoria del proceso
-hasta ~30s antes de expirar. Si se configura `RC_JWT` (JWT credential de la RC
-Developer Console) se usa el flujo `jwt-bearer` en su lugar.
+OAuth server-to-server. **En producción se usa el flujo JWT** (`RC_JWT` está
+configurado). Si `RC_JWT` no estuviera, cae a `client_credentials` (Basic auth
+con Client ID + Client Secret). El access token se cachea en memoria del proceso
+hasta ~30s antes de expirar.
 
-## Variables de entorno
+## Variables de entorno (en Vercel: Production + Preview salvo nota)
 
-| Var | Valor | Notas |
+| Var | Valor | Estado |
 | --- | --- | --- |
-| `RC_CLIENT_ID` | `8ljY2zqRERFdOnbLEdoKvm` | App de RingCentral |
-| `RC_CLIENT_SECRET` | *(secreto)* | **Pendiente**: tomarlo de RC Developer Console y agregarlo en Vercel |
-| `RC_ACCOUNT_PHONE` | `+14045968232` | Número emisor (E.164) |
-| `RC_SERVER_URL` | *(opcional)* | Default `https://platform.ringcentral.com` (sandbox: `https://platform.devtest.ringcentral.com`) |
-| `RC_JWT` | *(opcional)* | Activa el flujo JWT en vez de client_credentials |
-| `GHL_TOKEN` | *(ya configurado)* | — |
-| `GHL_LOCATION_ID` | `FmXJ8J0Ccird2AKk8pzQ` | — |
-| `GHL_SMS_PROVIDER_ID` | *(opcional)* | `conversationProviderId` para el mensaje entrante en GHL |
+| `RC_CLIENT_ID` | `8ljY2zqRERFdOnbLEdoKvm` | ✅ |
+| `RC_CLIENT_SECRET` | *(secreto RC Developer Console)* | ✅ |
+| `RC_ACCOUNT_PHONE` | `+14045968232` | ✅ |
+| `RC_JWT` | *(JWT credential)* | ✅ (fuerza flujo JWT) |
+| `RC_SERVER_URL` | *(opcional)* | Default `https://platform.ringcentral.com` |
+| `GHL_TOKEN` | *(secreto)* | ✅ |
+| `GHL_LOCATION_ID` | `FmXJ8J0Ccird2AKk8pzQ` | default en código |
+| `GHL_CONVERSATION_PROVIDER_ID` | `6a870e6d202787fbd6fb7ccc` | ✅ |
+| `GHL_WEBHOOK_PUBLIC_KEY` | *(opcional)* | override de la public key (pruebas) |
+
+## Testing
+
+- `scripts/test-ghl-outbound.mjs` — prueba el endpoint saliente: sin firma → 401,
+  firma inválida → 401, firmado + malformado → 400. NO prueba el camino feliz
+  (enviaría SMS real). Para el caso firmado, correr el dev server con
+  `GHL_WEBHOOK_PUBLIC_KEY` = la test key del encabezado del script.
+- `scripts/register-rc-webhook.mjs` — registra/lista la suscripción de RC (JWT).
+
+## Estado actual y pendientes
+
+**Hecho (todo en `main`, desplegado en prod, healthchecks 200):**
+- Endpoints entrante + saliente implementados y verificados.
+- Suscripción de RingCentral entrante **activa** (ver arriba).
+- Env vars configuradas en Vercel (Production + Preview).
+- Verificación de firma 401 confirmada en producción.
+
+**Pendiente (manual, del lado de las plataformas):**
+1. Configurar el **Conversation Provider en GHL** con el Delivery URL saliente
+   (`.../api/webhooks/ghl-outbound`) si aún no está.
+2. **Prueba end-to-end real**: (a) mandar un SMS al `+14045968232` y ver que
+   aparezca en el tab custom de GHL; (b) responder desde GHL y ver que llegue al
+   cliente + que el estado cambie a `delivered`.
+3. En el primer mensaje real, revisar los logs de Vercel: el endpoint saliente
+   loguea el payload completo (`[ghl-outbound] Payload verificado: ...`). Si los
+   nombres de campos reales de GHL difieren, ajustar `extractToPhone` /
+   `extractText` / `messageId` en `app/api/webhooks/ghl-outbound/route.ts`.
+4. Borrar `~/Downloads/rc-credentials.json` (tiene clientSecret + jwt en claro;
+   ya están en Vercel).
+
+## Infra / repo
+
+- Repo: `github.com/cdazalopez/taxi-laser-location` (privado). `main` es la rama
+  de trabajo; deploy por **Vercel CLI** (`vercel --prod`), NO por integración git.
+- Dominio de producción: `taxilaser.neuralpreneur.com` (deployment-specific URLs
+  tienen Deployment Protection → 302; usar siempre el dominio estable).
