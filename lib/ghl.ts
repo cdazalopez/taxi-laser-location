@@ -229,8 +229,12 @@ async function ghlPostMessage(
  *
  * Endpoint correcto para inbound: POST /conversations/messages/inbound
  * (el POST /conversations/messages "a secas" es para SALIENTES y dispararía un
- * envío real por el proveedor SMS de GHL). Requiere un `conversationProviderId`:
- * se toma de GHL_SMS_PROVIDER_ID si está configurado.
+ * envío real por el proveedor SMS de GHL).
+ *
+ * En modo "custom Conversation Provider" el `conversationProviderId` es
+ * OBLIGATORIO: sin él, el mensaje entrante falla o cae en el canal equivocado.
+ * Se toma de GHL_CONVERSATION_PROVIDER_ID (con fallback al nombre antiguo
+ * GHL_SMS_PROVIDER_ID por compatibilidad).
  */
 export async function addGhlInboundSms(
   contactId: string,
@@ -245,7 +249,8 @@ export async function addGhlInboundSms(
     message,
     direction: "inbound",
   };
-  const providerId = process.env.GHL_SMS_PROVIDER_ID;
+  const providerId =
+    process.env.GHL_CONVERSATION_PROVIDER_ID ?? process.env.GHL_SMS_PROVIDER_ID;
   if (providerId) body.conversationProviderId = providerId;
 
   const res = await ghlFetch(`${GHL_BASE}/conversations/messages/inbound`, {
@@ -258,6 +263,42 @@ export async function addGhlInboundSms(
     },
     body: JSON.stringify(body),
   });
+
+  const response = await res.json().catch(() => null);
+  return { ok: res.ok, status: res.status, response };
+}
+
+/**
+ * Actualiza el estado de entrega de un mensaje SALIENTE en GHL. Lo usa el
+ * Conversation Provider custom para confirmar a GHL si el SMS real (enviado por
+ * RingCentral) se entregó o falló, y así el dispatcher ve el estado correcto en
+ * el inbox.
+ * PUT /conversations/messages/{messageId}/status  { status }
+ *
+ * `status`: "delivered" | "failed" | "read" | "pending" (GHL). Nunca lanza:
+ * devuelve ok/status como los demás helpers para no tumbar el flujo del webhook.
+ */
+export async function updateGhlMessageStatus(
+  messageId: string,
+  status: "delivered" | "failed" | "read" | "pending",
+  extra?: Record<string, unknown>
+): Promise<{ ok: boolean; status: number; response: unknown }> {
+  const token = process.env.GHL_TOKEN;
+  if (!token) throw new Error("GHL_TOKEN no configurado");
+
+  const res = await ghlFetch(
+    `${GHL_BASE}/conversations/messages/${messageId}/status`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Version: "2021-07-28",
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ status, ...extra }),
+    }
+  );
 
   const response = await res.json().catch(() => null);
   return { ok: res.ok, status: res.status, response };
