@@ -7,6 +7,9 @@ export const dynamic = "force-dynamic";
 /**
  * Bootstrap del OAuth de la app de Marketplace dueña del Conversation Provider.
  *
+ * Ruta neutra (`/api/oauth/crm/...`): GHL rechaza registrar Redirect URLs que
+ * contengan referencias a su marca (ghl/highlevel/leadconnector) en la URL.
+ *
  * - GET sin `code`  → redirige a la pantalla de autorización de GHL
  *   (chooselocation). El usuario elige la location y aprueba los scopes.
  * - GET con `code`  → intercambia el code por tokens y los persiste en Redis.
@@ -30,7 +33,7 @@ const DEFAULT_SCOPES = [
 function redirectUri(req: Request): string {
   return (
     process.env.GHL_OAUTH_REDIRECT_URI ??
-    new URL("/api/oauth/ghl/callback", new URL(req.url).origin).toString()
+    new URL("/api/oauth/crm/callback", new URL(req.url).origin).toString()
   );
 }
 
@@ -61,7 +64,7 @@ export async function GET(req: Request) {
   // Con code → intercambiar y guardar.
   try {
     const t = await exchangeCodeForTokens(code, redirectUri(req));
-    console.log(`[ghl-oauth] Autorizado. location=${t.locationId} scopes=${t.scope}`);
+    console.log(`[crm-oauth] Autorizado. location=${t.locationId} scopes=${t.scope}`);
     return NextResponse.json({
       ok: true,
       message: "GHL OAuth autorizado y tokens guardados. Ya puedes activar GHL_USE_CONVERSATION_PROVIDER=on.",
@@ -69,7 +72,7 @@ export async function GET(req: Request) {
       userType: t.userType ?? null,
     });
   } catch (err) {
-    console.error("[ghl-oauth] Intercambio de code falló:", err);
+    console.error("[crm-oauth] Intercambio de code falló:", err);
     return NextResponse.json(
       { ok: false, error: String((err as Error)?.message ?? err) },
       { status: 500 }
