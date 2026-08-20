@@ -1,7 +1,25 @@
 import { redisCmd } from "@/lib/cache";
+import { getGhlOAuthToken } from "@/lib/ghl-oauth";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID ?? "FmXJ8J0Ccird2AKk8pzQ";
+
+/**
+ * Token para los llamados que TOCAN el Conversation Provider custom (registrar
+ * inbound con `conversationProviderId`, actualizar estado saliente). Con el canal
+ * custom activo (GHL_USE_CONVERSATION_PROVIDER=on) usa el token OAuth de la app
+ * dueña del provider — el único con acceso (si no, GHL da 401
+ * CONVERSATIONS_MSG_PROVIDER_NO_ACCESS). Si el canal custom está off, usa el
+ * token estático GHL_TOKEN (canal SMS default).
+ */
+async function providerAuthToken(): Promise<string> {
+  if (process.env.GHL_USE_CONVERSATION_PROVIDER === "on") {
+    return getGhlOAuthToken();
+  }
+  const token = process.env.GHL_TOKEN;
+  if (!token) throw new Error("GHL_TOKEN no configurado");
+  return token;
+}
 
 /**
  * fetch a la API de GHL con reintento en 429 (rate-limit) y backoff.
@@ -245,8 +263,7 @@ export async function addGhlInboundSms(
   contactId: string,
   message: string
 ): Promise<{ ok: boolean; status: number; response: unknown }> {
-  const token = process.env.GHL_TOKEN;
-  if (!token) throw new Error("GHL_TOKEN no configurado");
+  const token = await providerAuthToken();
 
   const body: Record<string, unknown> = {
     type: "SMS",
@@ -290,8 +307,7 @@ export async function updateGhlMessageStatus(
   status: "delivered" | "failed" | "read" | "pending",
   extra?: Record<string, unknown>
 ): Promise<{ ok: boolean; status: number; response: unknown }> {
-  const token = process.env.GHL_TOKEN;
-  if (!token) throw new Error("GHL_TOKEN no configurado");
+  const token = await providerAuthToken();
 
   const res = await ghlFetch(
     `${GHL_BASE}/conversations/messages/${messageId}/status`,
