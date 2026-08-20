@@ -231,10 +231,15 @@ async function ghlPostMessage(
  * (el POST /conversations/messages "a secas" es para SALIENTES y dispararía un
  * envío real por el proveedor SMS de GHL).
  *
- * En modo "custom Conversation Provider" el `conversationProviderId` es
- * OBLIGATORIO: sin él, el mensaje entrante falla o cae en el canal equivocado.
- * Se toma de GHL_CONVERSATION_PROVIDER_ID (con fallback al nombre antiguo
- * GHL_SMS_PROVIDER_ID por compatibilidad).
+ * Canal custom (Conversation Provider) DESHABILITADO por defecto: el `GHL_TOKEN`
+ * actual no tiene acceso al provider `6a870e6d202787fbd6fb7ccc` (GHL responde
+ * 401 `CONVERSATIONS_MSG_PROVIDER_NO_ACCESS`), así que sin `conversationProviderId`
+ * el mensaje entrante cae en el canal SMS default de GHL (sí aparece en el inbox).
+ *
+ * Para RE-ACTIVAR el canal custom (una vez el token tenga acceso al provider):
+ * poner `GHL_USE_CONVERSATION_PROVIDER=on`; entonces se adjunta el
+ * `conversationProviderId` (de GHL_CONVERSATION_PROVIDER_ID, o el antiguo
+ * GHL_SMS_PROVIDER_ID).
  */
 export async function addGhlInboundSms(
   contactId: string,
@@ -249,9 +254,11 @@ export async function addGhlInboundSms(
     message,
     direction: "inbound",
   };
-  const providerId =
-    process.env.GHL_CONVERSATION_PROVIDER_ID ?? process.env.GHL_SMS_PROVIDER_ID;
-  if (providerId) body.conversationProviderId = providerId;
+  if (process.env.GHL_USE_CONVERSATION_PROVIDER === "on") {
+    const providerId =
+      process.env.GHL_CONVERSATION_PROVIDER_ID ?? process.env.GHL_SMS_PROVIDER_ID;
+    if (providerId) body.conversationProviderId = providerId;
+  }
 
   const res = await ghlFetch(`${GHL_BASE}/conversations/messages/inbound`, {
     method: "POST",
