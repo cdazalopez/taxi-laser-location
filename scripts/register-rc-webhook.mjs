@@ -31,8 +31,11 @@ const WEBHOOK_ADDRESS =
   process.env.RC_WEBHOOK_ADDRESS ??
   "https://taxilaser.neuralpreneur.com/api/webhooks/ringcentral-sms";
 
-const EVENT_FILTER =
-  "/restapi/v1.0/account/~/extension/~/message-store/instant?type=SMS";
+// Extensión a la que atar la suscripción. `~` = la del JWT; o un id explícito
+// (RC_EXTENSION_ID) para suscribir la extensión que realmente recibe los SMS
+// (p.ej. la del número principal de empresa, que no es la del JWT).
+const EXT_ID = process.env.RC_EXTENSION_ID ?? "~";
+const EVENT_FILTER = `/restapi/v1.0/account/~/extension/${EXT_ID}/message-store/instant?type=SMS`;
 
 const args = new Set(process.argv.slice(2));
 const LIST_ONLY = args.has("--list");

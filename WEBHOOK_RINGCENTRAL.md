@@ -22,18 +22,30 @@ Registrada con `scripts/register-rc-webhook.mjs` (JWT auth flow).
 
 | Campo | Valor |
 | --- | --- |
-| Subscription ID | `29ae3c9e-93c6-4899-8de3-f142f9f49d0d` |
+| Subscription ID | `58c77df6-950e-4c28-a2fa-70480045b828` |
 | Status | `Active` |
-| Event filter | `/restapi/v1.0/account/~/extension/~/message-store/instant?type=SMS` |
+| Event filter | `/restapi/v1.0/account/~/extension/**62611342007**/message-store/instant?type=SMS` |
 | Address | `https://taxilaser.neuralpreneur.com/api/webhooks/ringcentral-sms` |
 | Expira | 2036-08-17 |
 
-> **Requisito previo**: la app de RingCentral (Message API, Client ID
-> `8ljY2zqRERFdOnbLEdoKvm`) necesita el scope **"Webhook Subscriptions"**
-> (`SubscriptionWebhook`); sin él, la creación falla con `403 SUB-528`.
+> **⚠ La suscripción debe atarse a la extensión que RECIBE los SMS, no a la del
+> JWT.** El número `+14045968232` es `MainCompanyNumber` y sus SMS entrantes
+> aterrizan en la extensión de usuario **102 (`62611342007`, "TAXI LASER LLC")**,
+> NO en la extensión del JWT (`62611333007`). La primera suscripción
+> (`29ae3c9e…`, atada a `~` = ext del JWT) quedó `Active` pero **nunca disparó**
+> porque esa extensión no recibe nada. Por eso se recrea con
+> `RC_EXTENSION_ID=62611342007`.
+>
+> **Requisitos de scopes** en la app (Message API, Client ID
+> `8ljY2zqRERFdOnbLEdoKvm`): `SMS`, `SubscriptionWebhook` (sin él → `403 SUB-528`
+> al crear), y `ReadAccounts` (para diagnosticar la asignación número→extensión).
 >
 > Para re-registrar / listar / recrear la suscripción:
-> `RC_CLIENT_ID=... RC_CLIENT_SECRET=... RC_JWT=... node scripts/register-rc-webhook.mjs [--list] [--force]`
+> `RC_CLIENT_ID=... RC_CLIENT_SECRET=... RC_JWT=... [RC_EXTENSION_ID=62611342007] node scripts/register-rc-webhook.mjs [--list] [--force]`
+>
+> Diagnóstico: `scripts/diagnose-rc-webhook.mjs` (estado de suscripción + message-store)
+> y `scripts/find-sms-extension.mjs` (escanea todas las extensiones para hallar
+> dónde caen los SMS).
 
 ## Endpoint 1 — Entrante: `POST /api/webhooks/ringcentral-sms`
 
