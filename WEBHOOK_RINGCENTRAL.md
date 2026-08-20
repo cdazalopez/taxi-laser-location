@@ -3,6 +3,19 @@
 Puente bidireccional de SMS entre **RingCentral** (número `+14045968232`) y la
 bandeja de conversaciones de **GoHighLevel** (location `FmXJ8J0Ccird2AKk8pzQ`).
 
+## URLs de producción (registrar en cada proveedor)
+
+Usa el dominio estable `taxilaser.neuralpreneur.com` (NO la URL específica del
+deployment, que tiene Deployment Protection y responde 302).
+
+| Proveedor | Registrar esta URL |
+| --- | --- |
+| **RingCentral** (subscripción SMS entrante) | `https://taxilaser.neuralpreneur.com/api/webhooks/ringcentral-sms` |
+| **GoHighLevel** (conversation provider / webhook SMS saliente) | `https://taxilaser.neuralpreneur.com/api/webhooks/ghl-outbound` |
+
+Cada endpoint expone además un `GET` de healthcheck que responde
+`{ "ok": true }`.
+
 ## Endpoint 1 — Entrante: `POST /api/webhooks/ringcentral-sms`
 
 SMS del cliente → RingCentral → GHL.
