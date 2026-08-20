@@ -147,8 +147,18 @@ export async function getGhlLocationToken(): Promise<string> {
     return cached;
   }
 
+  let meta = await readMeta();
+
+  // Auto-reparación: si el meta no tiene companyId ni marca de location (p.ej. se
+  // autorizó con una versión previa que no guardaba metadata), forzamos un
+  // refresh — la respuesta del refresh trae companyId/userType y repuebla el meta.
+  const looksLocation = meta.userType === "Location" && meta.locationId === TARGET_LOCATION_ID;
+  if (!meta.companyId && !looksLocation) {
+    await refreshBaseToken();
+    meta = await readMeta();
+  }
+
   const base = await getBaseToken();
-  const meta = await readMeta();
 
   // El token base ya sirve si es de la location objetivo.
   if (meta.userType === "Location" && meta.locationId === TARGET_LOCATION_ID) {
