@@ -7,18 +7,18 @@ export const dynamic = "force-dynamic";
 /**
  * Bootstrap del OAuth de la app de Marketplace dueña del Conversation Provider.
  *
- * Ruta neutra (`/api/oauth/crm/...`): GHL rechaza registrar Redirect URLs que
- * contengan referencias a su marca (ghl/highlevel/leadconnector) en la URL.
+ * Vive en `/oauth/callback` para coincidir con el Redirect URL DEFAULT de la app
+ * en GHL (el mismo que usa el Install link). Ruta neutra (sin referencias a la
+ * marca, que GHL rechaza en Redirect URLs).
  *
  * - GET sin `code`  → redirige a la pantalla de autorización de GHL
- *   (chooselocation). El usuario elige la location y aprueba los scopes.
+ *   (chooselocation) usando NUESTRA client key (GHL_OAUTH_CLIENT_ID).
  * - GET con `code`  → intercambia el code por tokens y los persiste en Redis.
- *   A partir de aquí el token se auto-refresca; no hay que repetir esto salvo
- *   que se revoque la app o se pierda el refresh token.
  *
- * El `redirect_uri` DEBE coincidir exactamente con el registrado en la app de
- * GHL (por defecto esta misma URL en producción; override con
- * GHL_OAUTH_REDIRECT_URI).
+ * IMPORTANTE: hay que entrar por ESTA URL (no por el Install link del
+ * marketplace), porque el Install link usa otra client key (`-mt1jvzlg`) cuyo
+ * secret no tenemos; el intercambio del code debe usar la MISMA client key que
+ * inició el flujo (`-mt23xoqs`, la que está en GHL_OAUTH_CLIENT_ID/SECRET).
  */
 
 const DEFAULT_SCOPES = [
@@ -33,7 +33,7 @@ const DEFAULT_SCOPES = [
 function redirectUri(req: Request): string {
   return (
     process.env.GHL_OAUTH_REDIRECT_URI ??
-    new URL("/api/oauth/crm/callback", new URL(req.url).origin).toString()
+    new URL("/oauth/callback", new URL(req.url).origin).toString()
   );
 }
 
