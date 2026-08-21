@@ -1,166 +1,125 @@
 # SMS RingCentral ↔ GoHighLevel
 
-Puente bidireccional de SMS entre **RingCentral** (número `+14045968232`) y la
-bandeja de conversaciones de **GoHighLevel** (location `FmXJ8J0Ccird2AKk8pzQ`).
+Puente **bidireccional** de SMS entre **RingCentral** (número principal
+`+14045968232`) y la bandeja de **GoHighLevel** (location `FmXJ8J0Ccird2AKk8pzQ`),
+vía un **Conversation Provider custom** de GHL ("RingCentral SMS" — tab separado).
+El número nunca se registra en Phone Numbers de GHL: todo entra/sale por RC.
 
-## URLs de producción (registrar en cada proveedor)
+**Estado: funcionando end-to-end en producción** (inbound → tab RC; outbound desde
+el tab RC → cliente por RingCentral; la respuesta del dispatcher arranca en RC).
 
-Usa el dominio estable `taxilaser.neuralpreneur.com` (NO la URL específica del
-deployment, que tiene Deployment Protection y responde 302).
+## URLs de producción
 
-| Proveedor | Registrar esta URL |
+Usa el dominio estable `taxilaser.neuralpreneur.com` (las URLs específicas del
+deployment tienen Deployment Protection → 302).
+
+| Qué | URL |
 | --- | --- |
-| **RingCentral** (subscripción SMS entrante) | `https://taxilaser.neuralpreneur.com/api/webhooks/ringcentral-sms` |
-| **GoHighLevel** (conversation provider / webhook SMS saliente) | `https://taxilaser.neuralpreneur.com/api/webhooks/ghl-outbound` |
+| RingCentral — suscripción SMS entrante | `https://taxilaser.neuralpreneur.com/api/webhooks/ringcentral-sms` |
+| GHL — Delivery URL del Conversation Provider (saliente) | `https://taxilaser.neuralpreneur.com/api/webhooks/ghl-outbound` |
+| GHL OAuth — bootstrap (una vez) | `https://taxilaser.neuralpreneur.com/oauth/callback` |
 
-Cada endpoint expone además un `GET` de healthcheck que responde
-`{ "ok": true }`.
+Los tres webhooks exponen `GET` de healthcheck (`{ "ok": true }`), salvo
+`/oauth/callback` que redirige a autorizar.
 
-## Suscripción de RingCentral (SMS entrante)
+## Flujo entrante — `POST /api/webhooks/ringcentral-sms`
 
-Registrada con `scripts/register-rc-webhook.mjs` (JWT auth flow).
+Cliente → RingCentral → GHL (tab RC).
+
+1. Handshake `Validation-Token` (echo del header → 200) al crear/renovar la suscripción.
+2. Extrae remitente (`body.from.phoneNumber`) + cuerpo (`body.subject`), busca/crea
+   el contacto en GHL (`findGhlContactByPhone`/`upsertGhlContact`, con `GHL_TOKEN` estático).
+3. Registra el mensaje con `addGhlInboundSms` → `POST /conversations/messages/inbound`
+   con **`type: "Custom"`** + `conversationProviderId`, autenticado con el **token OAuth
+   de location** (ver abajo). Responde 200 al instante (`waitUntil`).
+
+## Flujo saliente — `POST /api/webhooks/ghl-outbound`
+
+Dispatcher escribe en el tab RC → GHL manda POST **firmado** (Ed25519) → RingCentral.
+
+1. Lee el body crudo (`req.text()`) antes de parsear.
+2. Verifica la firma Ed25519 de `X-GHL-Signature` (`crypto.verify(null, ...)`). Inválida/ausente → **401**.
+3. Valida `phone` + `message` → falta alguno → **400**.
+4. Envía por RingCentral (`sendRingCentralSms`, se **await**ea) desde `+14045968232`.
+5. Confirma estado a GHL (`updateGhlMessageStatus` → `PUT .../status`, con token OAuth).
+6. **200** si el envío salió, **500** si RC falló.
+
+Public key de GHL hardcodeada en el route (override: `GHL_WEBHOOK_PUBLIC_KEY`).
+
+## Auth — dos OAuth distintos
+
+### RingCentral (para enviar y suscribir)
+- Flujo **JWT** (`grant_type=jwt-bearer`). `RC_JWT` es el JWT del **usuario de la
+  extensión 102** (`62611342007`, "TAXI LASER LLC") — la que **posee `+14045968232`
+  con feature SmsSender** y recibe sus SMS. Envía con `/extension/~/sms`.
+- App RC "Message Api" (Client ID `8ljY2zqRERFdOnbLEdoKvm`), scopes `SMS`,
+  `SubscriptionWebhook`, `ReadAccounts`.
+
+### GoHighLevel (para el Conversation Provider)
+- Los llamados que tocan el provider (`addGhlInboundSms`, `updateGhlMessageStatus`)
+  usan un **token OAuth de la app de Marketplace dueña del provider** — un API key /
+  Private Integration da `401 CONVERSATIONS_MSG_PROVIDER_NO_ACCESS`.
+- App "TaxiLaser-RingCentral-Bridge" (OAuth Client ID `6a8676513ef7bce3fba0a357-mt23xoqs`).
+- `lib/ghl-oauth.ts`: bootstrap en `/oauth/callback` → guarda refresh token en Redis
+  (Upstash) → deriva un **location token** (company→location vía `/oauth/locationToken`)
+  → auto-refresca. Los otros llamados (contacto, TaxiCaller WhatsApp) siguen con `GHL_TOKEN`.
+
+## Variables de entorno (Vercel: Production + Preview)
+
+| Var | Valor | Notas |
+| --- | --- | --- |
+| `RC_CLIENT_ID` | `8ljY2zqRERFdOnbLEdoKvm` | app RC |
+| `RC_CLIENT_SECRET` | *(secreto)* | |
+| `RC_JWT` | *(JWT del usuario ext 102)* | dueño de `+14045968232` con SmsSender |
+| `RC_ACCOUNT_PHONE` | `+14045968232` | número emisor |
+| `RC_EXTENSION_ID` | `~` | extensión propia del JWT (ext 102) |
+| `GHL_TOKEN` | *(secreto)* | contacto lookup/upsert + TaxiCaller (no provider) |
+| `GHL_LOCATION_ID` | `FmXJ8J0Ccird2AKk8pzQ` | |
+| `GHL_CONVERSATION_PROVIDER_ID` | `6a870e6d202787fbd6fb7ccc` | |
+| `GHL_USE_CONVERSATION_PROVIDER` | `on` | activa token OAuth + `type Custom` + providerId |
+| `GHL_OAUTH_CLIENT_ID` | `6a8676513ef7bce3fba0a357-mt23xoqs` | app dueña del provider |
+| `GHL_OAUTH_CLIENT_SECRET` | *(secreto)* | |
+| `GHL_OAUTH_REDIRECT_URI` | `https://taxilaser.neuralpreneur.com/oauth/callback` | debe coincidir con la app |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN` | *(Upstash)* | cache + tokens OAuth GHL |
+
+## Scripts
+
+- `scripts/register-rc-webhook.mjs` — registra/lista la suscripción de RC (JWT).
+  Usar `RC_EXTENSION_ID=62611342007` para atarla a la ext que recibe los SMS.
+- `scripts/diagnose-rc-webhook.mjs` — estado de suscripción + message-store + números.
+- `scripts/find-sms-extension.mjs` — escanea extensiones para hallar dónde caen los SMS.
+
+## Suscripción RC entrante activa
 
 | Campo | Valor |
 | --- | --- |
 | Subscription ID | `58c77df6-950e-4c28-a2fa-70480045b828` |
-| Status | `Active` |
-| Event filter | `/restapi/v1.0/account/~/extension/**62611342007**/message-store/instant?type=SMS` |
-| Address | `https://taxilaser.neuralpreneur.com/api/webhooks/ringcentral-sms` |
-| Expira | 2036-08-17 |
+| Event filter | `.../account/~/extension/62611342007/message-store/instant?type=SMS` |
+| Address | `.../api/webhooks/ringcentral-sms` |
 
-> **⚠ La suscripción debe atarse a la extensión que RECIBE los SMS, no a la del
-> JWT.** El número `+14045968232` es `MainCompanyNumber` y sus SMS entrantes
-> aterrizan en la extensión de usuario **102 (`62611342007`, "TAXI LASER LLC")**,
-> NO en la extensión del JWT (`62611333007`). La primera suscripción
-> (`29ae3c9e…`, atada a `~` = ext del JWT) quedó `Active` pero **nunca disparó**
-> porque esa extensión no recibe nada. Por eso se recrea con
-> `RC_EXTENSION_ID=62611342007`.
->
-> **Requisitos de scopes** en la app (Message API, Client ID
-> `8ljY2zqRERFdOnbLEdoKvm`): `SMS`, `SubscriptionWebhook` (sin él → `403 SUB-528`
-> al crear), y `ReadAccounts` (para diagnosticar la asignación número→extensión).
->
-> Para re-registrar / listar / recrear la suscripción:
-> `RC_CLIENT_ID=... RC_CLIENT_SECRET=... RC_JWT=... [RC_EXTENSION_ID=62611342007] node scripts/register-rc-webhook.mjs [--list] [--force]`
->
-> Diagnóstico: `scripts/diagnose-rc-webhook.mjs` (estado de suscripción + message-store)
-> y `scripts/find-sms-extension.mjs` (escanea todas las extensiones para hallar
-> dónde caen los SMS).
+## Gotchas (lecciones que costaron sangre)
 
-## Endpoint 1 — Entrante: `POST /api/webhooks/ringcentral-sms`
-
-SMS del cliente → RingCentral → GHL.
-
-1. **Handshake de validación**: si el request trae el header `Validation-Token`,
-   se responde `200` devolviendo ese mismo header (lo exige RingCentral al
-   crear/renovar la subscripción).
-2. En cada SMS entrante: extrae el número del remitente (`body.from.phoneNumber`)
-   y el cuerpo (`body.subject`), busca el contacto en GHL por teléfono y **lo
-   crea si no existe** (`/contacts/upsert`).
-3. Registra el mensaje como **entrante** en GHL vía
-   `POST /conversations/messages/inbound` (`type: SMS`).
-4. Responde `200` al instante; el trabajo con GHL corre en background
-   (`waitUntil`).
-
-> El endpoint correcto para registrar un mensaje recibido es
-> `/conversations/messages/inbound`. El `/conversations/messages` "a secas" es
-> para salientes y dispararía un envío real por el proveedor SMS de GHL.
-
-## Endpoint 2 — Saliente: `POST /api/webhooks/ghl-outbound`
-
-SMS del dispatcher (en GHL, tab custom del Conversation Provider) → RingCentral
-→ cliente. GHL manda un POST **firmado** (Ed25519) al Delivery URL.
-
-1. Lee el **body crudo** (`req.text()`) ANTES de parsear (necesario para la firma).
-2. **Verifica la firma Ed25519** del header `X-GHL-Signature` (base64) con la
-   public key de GHL: `crypto.verify(null, bodyBuffer, publicKey, sigBuffer)`.
-   Firma inválida/ausente → **401** y no procesa nada.
-3. Parsea el payload verificado (loguea el payload completo para debug) y valida
-   destinatario (`phone`) + cuerpo (`message`). Falta alguno → **400**.
-4. Envía el SMS por RingCentral desde `RC_ACCOUNT_PHONE`
-   (`sendRingCentralSms()` en `lib/ringcentral.ts`). Se **await**ea el envío.
-5. Confirma el estado a GHL (`updateGhlMessageStatus()` →
-   `PUT /conversations/messages/{messageId}/status`, `delivered` | `failed`).
-6. Responde **200** si el envío fue exitoso, **500** si el envío real falló.
-
-> La public key de GHL está hardcodeada en el route; se puede sobreescribir con
-> `GHL_WEBHOOK_PUBLIC_KEY` para pruebas locales con un par de llaves propio.
-
-### Conversation Provider (GHL)
-
-Canal custom (aparece como tab separado en la conversación, no reemplaza el SMS
-default de GHL). El número `+14045968232` NUNCA se registra en Phone Numbers de
-GHL — todo entra/sale por RingCentral.
-
-- `conversationProviderId`: `6a870e6d202787fbd6fb7ccc`
-- **⚠ Actualmente DESHABILITADO en el inbound.** El `GHL_TOKEN` no tiene acceso a
-  ese provider → GHL respondía `401 CONVERSATIONS_MSG_PROVIDER_NO_ACCESS` y el
-  mensaje entrante no se registraba. Por eso el inbound va al **canal SMS default
-  de GHL** (sin `conversationProviderId`). El adjuntar el id está detrás del flag
-  `GHL_USE_CONVERSATION_PROVIDER=on` en `lib/ghl.ts` → `addGhlInboundSms`.
-  Para re-activar el canal custom hay que primero darle acceso al token
-  (token OAuth de la app dueña del provider, scope `conversations/message.write`).
-
-## Auth RingCentral
-
-OAuth server-to-server. **En producción se usa el flujo JWT** (`RC_JWT` está
-configurado). Si `RC_JWT` no estuviera, cae a `client_credentials` (Basic auth
-con Client ID + Client Secret). El access token se cachea en memoria del proceso
-hasta ~30s antes de expirar.
-
-## Variables de entorno (en Vercel: Production + Preview salvo nota)
-
-| Var | Valor | Estado |
-| --- | --- | --- |
-| `RC_CLIENT_ID` | `8ljY2zqRERFdOnbLEdoKvm` | ✅ |
-| `RC_CLIENT_SECRET` | *(secreto RC Developer Console)* | ✅ |
-| `RC_ACCOUNT_PHONE` | `+14045968232` | ✅ |
-| `RC_JWT` | *(JWT credential)* | ✅ (fuerza flujo JWT) |
-| `RC_SERVER_URL` | *(opcional)* | Default `https://platform.ringcentral.com` |
-| `GHL_TOKEN` | *(secreto)* | ✅ |
-| `GHL_LOCATION_ID` | `FmXJ8J0Ccird2AKk8pzQ` | default en código |
-| `GHL_CONVERSATION_PROVIDER_ID` | `6a870e6d202787fbd6fb7ccc` | ✅ (solo se usa si el flag está on) |
-| `GHL_USE_CONVERSATION_PROVIDER` | `on` para adjuntar el provider al inbound | ⚠ OFF (token sin acceso al provider) |
-| `GHL_WEBHOOK_PUBLIC_KEY` | *(opcional)* | override de la public key (pruebas) |
-
-## Testing
-
-- `scripts/test-ghl-outbound.mjs` — prueba el endpoint saliente: sin firma → 401,
-  firma inválida → 401, firmado + malformado → 400. NO prueba el camino feliz
-  (enviaría SMS real). Para el caso firmado, correr el dev server con
-  `GHL_WEBHOOK_PUBLIC_KEY` = la test key del encabezado del script.
-- `scripts/register-rc-webhook.mjs` — registra/lista la suscripción de RC (JWT).
-
-## Estado actual y pendientes
-
-**Hecho (todo en `main`, desplegado en prod, healthchecks 200):**
-- Endpoints entrante + saliente implementados y verificados.
-- Suscripción de RingCentral entrante **activa**, atada a la ext 102 (ver arriba).
-- **Inbound end-to-end REAL confirmado**: SMS real al `+14045968232` → webhook
-  disparó (visible en logs de Vercel) → mensaje registrado en GHL (canal default).
-- Env vars configuradas en Vercel (Production + Preview).
-- Verificación de firma 401 (saliente) confirmada en producción.
-
-**Diagnóstico clave (causa raíz del webhook que no llegaba):** la 1ª suscripción
-se ató a la extensión del JWT (`62611333007`), que no recibe tráfico. Los SMS del
-`MainCompanyNumber` caen en la ext de usuario **102 (`62611342007`)**. Fix: recrear
-la suscripción con `RC_EXTENSION_ID=62611342007`.
-
-**Pendiente (manual, del lado de las plataformas):**
-1. **Acceso del token al Conversation Provider** (para re-activar el canal custom):
-   dar al `GHL_TOKEN` acceso al provider `6a870e6d202787fbd6fb7ccc` (token OAuth de
-   la app dueña del provider, scope `conversations/message.write`), luego poner
-   `GHL_USE_CONVERSATION_PROVIDER=on` y redeploy. Hoy el inbound usa el canal SMS
-   default (funciona, pero no en el tab custom).
-2. **Probar el saliente end-to-end**: responder desde GHL y ver que el SMS llegue
-   al cliente vía RingCentral + estado `delivered`. En el 1er mensaje real revisar
-   `[ghl-outbound] Payload verificado: ...` en Vercel y ajustar
-   `extractToPhone`/`extractText`/`messageId` si los campos de GHL difieren.
-3. Borrar `~/Downloads/rc-credentials.json` (clientSecret + jwt en claro; ya en Vercel).
+1. **La suscripción debe atarse a la extensión que RECIBE los SMS**, no a la del JWT.
+   `+14045968232` es `MainCompanyNumber`; su SMS entrante cae en la **ext 102**
+   (`62611342007`), no en la del JWT admin (`62611333007`). Suscribir la ext equivocada
+   deja la suscripción `Active` pero **nunca dispara**.
+2. **Enviar requiere el JWT de la extensión que posee el número.** La ext 102 tiene
+   `+14045968232` con feature `SmsSender`; la ext admin no. Con el JWT admin: `MSG-304`
+   (número no pertenece) o `CMN-419` (OutboundSMS extendido para otra extensión).
+   Solución: `RC_JWT` = JWT del usuario ext 102.
+3. **El Conversation Provider custom exige el token OAuth de SU app** (no `GHL_TOKEN`).
+   Sin él → `401 CONVERSATIONS_MSG_PROVIDER_NO_ACCESS`.
+4. **El inbound al provider custom usa `type: "Custom"`, NO `"SMS"`** (aunque el
+   provider se muestre como SMS). Con `type SMS` + providerId → `400` mismatch;
+   con `type Custom` + providerId → `201` y cae en el tab RC.
+5. **El token OAuth de GHL salió a nivel Company**; los mensajes son de location →
+   se deriva un location token vía `/oauth/locationToken` (companyId+locationId).
+6. **Los Redirect URLs de GHL no aceptan `ghl`/`highlevel`/`leadconnector`** en la
+   URL → el callback vive en `/oauth/callback` (neutro).
 
 ## Infra / repo
 
-- Repo: `github.com/cdazalopez/taxi-laser-location` (privado). `main` es la rama
-  de trabajo; deploy por **Vercel CLI** (`vercel --prod`), NO por integración git.
-- Dominio de producción: `taxilaser.neuralpreneur.com` (deployment-specific URLs
-  tienen Deployment Protection → 302; usar siempre el dominio estable).
+- Repo: `github.com/cdazalopez/taxi-laser-location` (privado). Deploy por **Vercel CLI**
+  (`vercel --prod`), NO por integración git. El alias del dominio a veces hay que
+  re-apuntarlo: `vercel alias set <deployment-url> taxilaser.neuralpreneur.com`.
+- Pendiente menor: borrar `~/Downloads/rc-credentials.json` (secretos en claro; ya en Vercel).
