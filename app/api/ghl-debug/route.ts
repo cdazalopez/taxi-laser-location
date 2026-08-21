@@ -50,21 +50,19 @@ export async function GET(req: Request) {
     out.upsert = { status: up.status, contactId };
     if (!contactId) return NextResponse.json(out);
 
-    // 2. Probar variantes de la Add Inbound Message API (parar en la 1ª que sirva).
+    // 2. Probar variantes de `type` CON el providerId correcto (sin corto-circuito).
+    const base = { contactId, message: "diag", direction: "inbound", conversationProviderId: PROVIDER };
     const variants = [
-      { label: "SMS + providerId", body: { type: "SMS", contactId, message: "diag", direction: "inbound", conversationProviderId: PROVIDER } },
-      { label: "SMS sin providerId", body: { type: "SMS", contactId, message: "diag", direction: "inbound" } },
-      { label: "Custom + providerId", body: { type: "Custom", contactId, message: "diag", direction: "inbound", conversationProviderId: PROVIDER } },
-      { label: "Live_Chat + providerId", body: { type: "Live_Chat", contactId, message: "diag", direction: "inbound", conversationProviderId: PROVIDER } },
+      { label: "SMS + providerId", body: { type: "SMS", ...base } },
+      { label: "Custom + providerId", body: { type: "Custom", ...base } },
+      { label: "Live_Chat + providerId", body: { type: "Live_Chat", ...base } },
+      { label: "sin type + providerId", body: { ...base } },
     ];
     out.attempts = [];
     for (const v of variants) {
       const r = await ghl(token, "/conversations/messages/inbound", "POST", v.body);
       out.attempts.push({ label: v.label, status: r.status, body: r.body });
-      if (r.status >= 200 && r.status < 300) {
-        out.accepted = v.label;
-        break;
-      }
+      if (r.status >= 200 && r.status < 300 && !out.accepted) out.accepted = v.label;
     }
   } catch (e) {
     out.error = String((e as Error)?.message ?? e);
