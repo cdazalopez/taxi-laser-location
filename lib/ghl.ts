@@ -264,14 +264,19 @@ export async function addGhlInboundSms(
   message: string
 ): Promise<{ ok: boolean; status: number; response: unknown }> {
   const token = await providerAuthToken();
+  const useProvider = process.env.GHL_USE_CONVERSATION_PROVIDER === "on";
 
+  // Con el canal custom, GHL exige type "Custom" (aunque el provider se muestre
+  // como "SMS" en el Marketplace) + el conversationProviderId — comprobado
+  // empíricamente: "SMS"+id → 400 mismatch, "Custom"+id → 201. Sin canal custom,
+  // type "SMS" al canal default.
   const body: Record<string, unknown> = {
-    type: "SMS",
+    type: useProvider ? "Custom" : "SMS",
     contactId,
     message,
     direction: "inbound",
   };
-  if (process.env.GHL_USE_CONVERSATION_PROVIDER === "on") {
+  if (useProvider) {
     const providerId =
       process.env.GHL_CONVERSATION_PROVIDER_ID ?? process.env.GHL_SMS_PROVIDER_ID;
     if (providerId) body.conversationProviderId = providerId;
