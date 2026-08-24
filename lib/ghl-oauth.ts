@@ -26,6 +26,9 @@ const RT_KEY = "ghl:oauth:refresh_token"; // refresh token (rota en cada uso)
 const AT_KEY = "ghl:oauth:access_token"; // access token base (con TTL)
 const META_KEY = "ghl:oauth:meta"; // { userType, companyId, locationId }
 const LT_KEY = "ghl:oauth:location_token"; // location access token derivado (TTL)
+const REFRESH_LOCK_KEY = "ghl:oauth:refresh_lock"; // lock para serializar el refresh
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const TARGET_LOCATION_ID = process.env.GHL_LOCATION_ID ?? "FmXJ8J0Ccird2AKk8pzQ";
 
@@ -97,20 +100,52 @@ export async function exchangeCodeForTokens(
   return t;
 }
 
-/** Refresca el access token base usando el refresh token guardado (que rota). */
+/**
+ * Refresca el access token base usando el refresh token guardado (que ROTA en
+ * cada uso). Serializado con un lock en Redis: el refresh token es single-use, así
+ * que dos refresh concurrentes con el mismo token → uno gana y el otro recibe
+ * `invalid_grant`; peor aún, si el SET del token nuevo falla (p.ej. Redis sin
+ * cuota), el guardado queda muerto. Con el lock, solo UNA invocación refresca; las
+ * demás esperan y releen el access token nuevo. (Incidente 2026-08-24.)
+ */
 async function refreshBaseToken(): Promise<string> {
-  const refresh = (await redisCmd(["GET", RT_KEY])) as string | null;
-  if (!refresh) {
-    throw new Error("GHL OAuth sin refresh token: autoriza la app en /oauth/callback");
+  const gotLock = (await redisCmd(["SET", REFRESH_LOCK_KEY, "1", "NX", "EX", 30])) === "OK";
+
+  // No obtuvimos el lock → otra invocación está refrescando. Esperamos (máx ~4s)
+  // a que aparezca el access token nuevo y lo reusamos, sin tocar el refresh token.
+  if (!gotLock) {
+    for (let i = 0; i < 8; i++) {
+      await sleep(500);
+      const at = (await redisCmd(["GET", AT_KEY])) as string | null;
+      if (at) {
+        memBase = { token: at, expiresAt: Date.now() + 60_000 };
+        return at;
+      }
+    }
   }
-  const params = new URLSearchParams({
-    grant_type: "refresh_token",
-    refresh_token: refresh,
-    user_type: "Location",
-  });
-  const t = await postToken(params);
-  await storeBaseTokens(t);
-  return t.access_token;
+
+  try {
+    // Double-check: alguien pudo haber refrescado mientras adquiríamos el lock.
+    const fresh = (await redisCmd(["GET", AT_KEY])) as string | null;
+    if (fresh) {
+      memBase = { token: fresh, expiresAt: Date.now() + 60_000 };
+      return fresh;
+    }
+    const refresh = (await redisCmd(["GET", RT_KEY])) as string | null;
+    if (!refresh) {
+      throw new Error("GHL OAuth sin refresh token: autoriza la app en /oauth/callback");
+    }
+    const params = new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refresh,
+      user_type: "Location",
+    });
+    const t = await postToken(params);
+    await storeBaseTokens(t);
+    return t.access_token;
+  } finally {
+    if (gotLock) await redisCmd(["DEL", REFRESH_LOCK_KEY]);
+  }
 }
 
 /** Token base (Company o Location) válido: memoria → Redis → refresh. */

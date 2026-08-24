@@ -53,7 +53,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: "GHL_OAUTH_CLIENT_ID no configurado" }, { status: 500 });
     }
     const scopes = process.env.GHL_OAUTH_SCOPES ?? DEFAULT_SCOPES;
-    const authUrl = new URL("https://marketplace.gohighlevel.com/v2/oauth/chooselocation");
+    const authUrl = new URL("https://marketplace.leadconnectorhq.com/oauth/chooselocation");
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("client_id", clientId);
     authUrl.searchParams.set("redirect_uri", redirectUri(req));
