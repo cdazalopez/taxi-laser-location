@@ -25,6 +25,22 @@ const DAY_TTL = 60 * 60 * 24 * 400; // ~13 meses
 
 // Umbral de SLA (respuesta considerada "tardía") en segundos.
 const SLA_SECONDS = Number(process.env.KPI_SLA_SECONDS ?? 300);
+// Conversaciones procesadas en paralelo (acelera la corrida ~Nx). GHL 429 se
+// maneja con backoff en ghlFetch, así que una concurrencia moderada es segura.
+const CONCURRENCY = Number(process.env.KPI_CONCURRENCY ?? 6);
+
+/** Ejecuta `fn` sobre `items` con concurrencia acotada. */
+async function mapLimit<T>(items: T[], limit: number, fn: (t: T) => Promise<void>): Promise<void> {
+  let i = 0;
+  const n = Math.max(1, Math.min(limit, items.length));
+  const workers = Array.from({ length: n }, async () => {
+    while (i < items.length) {
+      const idx = i++;
+      await fn(items[idx]);
+    }
+  });
+  await Promise.all(workers);
+}
 
 // Buckets de histograma de tiempo de respuesta (límites superiores, ms).
 const BUCKET_MS = [60, 180, 300, 600, 1800, 3600].map((s) => s * 1000);
@@ -140,13 +156,13 @@ export async function aggregateWindow(
   let responses = 0;
   let inbound = 0;
 
-  for (const conv of convs) {
+  await mapLimit(convs, CONCURRENCY, async (conv) => {
     let msgs;
     try {
       msgs = await getConversationMessages(conv.id, { sinceMs });
     } catch (err) {
       console.error(`[kpi] mensajes de conv ${conv.id} fallaron:`, err);
-      continue;
+      return;
     }
 
     let pending: { ms: number; platform: Platform; day: string; hour: number } | null = null;
@@ -183,7 +199,7 @@ export async function aggregateWindow(
         }
       }
     }
-  }
+  });
 
   // Persistir solo los días objetivo (idempotente, overwrite).
   for (const d of Array.from(targetDays)) {

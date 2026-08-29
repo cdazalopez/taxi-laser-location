@@ -183,6 +183,12 @@ export default function Dashboard() {
       >
         Atención de mensajes
       </SectionTitle>
+      {data?.coverage && data.coverage.daysWithData < data.coverage.requestedDays && (
+        <div style={{ fontSize: 11.5, color: "#fbbf24", background: "#2a2411", border: "1px solid #4d3f16", borderRadius: 8, padding: "7px 11px", marginBottom: 10 }}>
+          ⚠️ Historial parcial: hay datos de <b>{data.coverage.daysWithData}</b> de los <b>{data.coverage.requestedDays}</b> días pedidos
+          {data.coverage.firstDay ? ` (desde ${data.coverage.firstDay})` : ""}. El historial se completa día a día; por eso rangos largos aún pueden coincidir.
+        </div>
+      )}
       <div style={row}>
         <Tile value={kpis?.inbound?.total ?? "—"} label="Mensajes entrantes" color="#e5e7eb" windowLabel="rango sel." />
         <Tile value={r?.count ?? "—"} label="Respondidos" color="#60a5fa" windowLabel="rango sel." />

@@ -49,6 +49,16 @@ export async function GET(req: Request) {
 
   const kpis = summarize(aggs, { user, platform });
 
+  // Cobertura real: qué días del rango pedido tienen agregados (el resto aún no
+  // se ha calculado / no hay historial). Evita que 7d y 30d parezcan "iguales".
+  const withData = aggs.map((a) => a.day).sort();
+  const coverage = {
+    requestedDays: days.length,
+    daysWithData: withData.length,
+    firstDay: withData[0] ?? null,
+    lastDay: withData[withData.length - 1] ?? null,
+  };
+
   // Lista de usuarios presentes en el rango (para el filtro del dashboard).
   const usersMap: Record<string, string> = {};
   for (const a of aggs)
@@ -59,6 +69,7 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     range: { from, to, days: days.length },
+    coverage,
     filters: { user: user || null, platform: platform || null },
     users,
     kpis,
