@@ -191,8 +191,8 @@ export default function Dashboard() {
         <Grid>
           <Tile value={fmtNum(tc?.tripsToday ?? op?.trips?.today)} label="Viajes hoy" color={C.text} windowLabel="hoy"
             sub={tc?.tripsYesterday != null ? `ayer ${fmtNum(tc.tripsYesterday)} · sem. pasada ${fmtNum(tc?.tripsLastWeek)}` : `${op?.trips?.today ?? 0} por webhook`} />
-          <Tile value={fmtNum(tc?.activeVehicles)} label="Vehículos activos" color={C.purple} windowLabel="en vivo"
-            sub={tc?.activeVehicles != null ? `de ${tc?.fleetSize} en flota` : (tc?.ok ? "sin datos" : "sin conexión")} pending={tc?.activeVehicles == null} />
+          <Tile value={fmtNum(tc?.driversToday)} label="Conductores con turno hoy" color={C.purple} windowLabel="hoy"
+            sub={tc?.activeVehicles != null ? `flota: ${fmtNum(tc?.activeVehicles)}/${fmtNum(tc?.fleetSize)} vehículos hab.` : (tc?.ok ? "sin datos" : "sin conexión")} pending={tc?.driversToday == null} />
           <Tile value={op?.missedCalls?.ok ? fmtNum(op?.missedCalls?.missed) : "—"} label="Llamadas perdidas" color={C.red} windowLabel="24h"
             sub={op?.missedCalls?.ok ? `de ${op?.missedCalls?.total} entrantes` : "scope/permiso RC"} pending={!op?.missedCalls?.ok} />
           <Tile value={fmtNum(tc?.avgRating)} label="Calificación" color={C.amber} windowLabel="7 días" sub="TaxiCaller (pendiente)" pending={tc?.avgRating == null} />

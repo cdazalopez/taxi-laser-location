@@ -70,8 +70,9 @@ export async function taxicallerGet(
 
 export interface TaxiCallerSnapshot {
   ok: boolean;
-  activeVehicles: number | null; // vehículos con active=1 en la flota
+  activeVehicles: number | null; // vehículos con active=1 (habilitados en flota)
   fleetSize: number | null; // total de vehículos registrados
+  driversToday: number | null; // conductores DISTINTOS con turno hoy (report shift)
   avgRating: number | null; // pendiente (no hay plantilla con rating)
   tripsToday: number | null; // report "Finished jobs"
   tripsYesterday: number | null;
@@ -81,6 +82,7 @@ export interface TaxiCallerSnapshot {
 
 const TC_TZ = process.env.KPI_TZ ?? "America/New_York";
 const TRIPS_TEMPLATE = Number(process.env.TAXICALLER_TRIPS_TEMPLATE ?? 19); // "Finished jobs"
+const SHIFT_TEMPLATE = Number(process.env.TAXICALLER_SHIFT_TEMPLATE ?? 14343); // "Shift"
 const SNAP_KEY = "tc:snapshot";
 const SNAP_TS = "tc:snapshot:ts";
 const SNAP_TTL = 3600;
@@ -126,19 +128,60 @@ export async function getTripsTotal(
   }
 }
 
+/** Conductores DISTINTOS con al menos un turno hoy (report shift). */
+export async function getDriversWithShiftToday(companyId: string): Promise<number | null> {
+  try {
+    const { token } = await getTaxiCallerJwt();
+    const body = {
+      company_id: Number(companyId),
+      report_type: "shift",
+      output_format: "json",
+      template_id: SHIFT_TEMPLATE,
+      search_query: { period: { "@type": "custom", start: `${etDateStr(0)}T00:00:00`, end: `${etDateStr(1)}T00:00:00` } },
+    };
+    const res = await fetch(`${TC_BASE}/reports/typed/generate`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    const rows: any[] = data?.rows ?? [];
+    const names = new Set(rows.map((r) => String(r?.["driver.name_name"] ?? "").trim()).filter(Boolean));
+    return names.size;
+  } catch {
+    return null;
+  }
+}
+
 const EMPTY_SNAP: TaxiCallerSnapshot = {
-  ok: false, activeVehicles: null, fleetSize: null, avgRating: null,
+  ok: false, activeVehicles: null, fleetSize: null, driversToday: null, avgRating: null,
   tripsToday: null, tripsYesterday: null, tripsLastWeek: null,
 };
 
-/** Construye el snapshot desde la API (vehículos + viajes hoy/ayer/semana pasada). */
+/** Trae TODOS los vehículos (vehicle/list es paginado: requiere offset+limit). */
+async function getAllVehicles(companyId: string): Promise<any[] | null> {
+  const out: any[] = [];
+  const limit = 200;
+  for (let i = 0, offset = 0; i < 20; i++, offset += limit) {
+    const r = await taxicallerGet(`company/${companyId}/vehicle/list?offset=${offset}&limit=${limit}`);
+    if (!r.ok || !Array.isArray(r.data?.list)) return out.length ? out : null;
+    out.push(...r.data.list);
+    if (r.data.list.length < limit) break;
+  }
+  return out;
+}
+
+/** Construye el snapshot desde la API (flota + conductores hoy + viajes). */
 async function buildSnapshot(): Promise<TaxiCallerSnapshot> {
   try {
     const { companyId } = await getTaxiCallerJwt();
     if (!companyId) return { ...EMPTY_SNAP, note: "sin company id" };
 
-    const [veh, tToday, tYest, tLastWk] = await Promise.all([
-      taxicallerGet(`company/${companyId}/vehicle/list`),
+    const [vehicles, driversToday, tToday, tYest, tLastWk] = await Promise.all([
+      getAllVehicles(companyId),
+      getDriversWithShiftToday(companyId),
       getTripsTotal(companyId, `${etDateStr(0)}T00:00:00`, `${etDateStr(1)}T00:00:00`),
       getTripsTotal(companyId, `${etDateStr(-1)}T00:00:00`, `${etDateStr(0)}T00:00:00`),
       getTripsTotal(companyId, `${etDateStr(-7)}T00:00:00`, `${etDateStr(-6)}T00:00:00`),
@@ -146,13 +189,12 @@ async function buildSnapshot(): Promise<TaxiCallerSnapshot> {
 
     let activeVehicles: number | null = null;
     let fleetSize: number | null = null;
-    if (veh.ok && Array.isArray(veh.data?.list)) {
-      const list: any[] = veh.data.list;
-      fleetSize = list.length;
-      activeVehicles = list.filter((v) => v?.active === 1).length;
+    if (Array.isArray(vehicles)) {
+      fleetSize = vehicles.length;
+      activeVehicles = vehicles.filter((v) => v?.active === 1).length;
     }
     return {
-      ok: true, activeVehicles, fleetSize, avgRating: null,
+      ok: true, activeVehicles, fleetSize, driversToday, avgRating: null,
       tripsToday: tToday, tripsYesterday: tYest, tripsLastWeek: tLastWk, note: "live",
     };
   } catch (err) {
