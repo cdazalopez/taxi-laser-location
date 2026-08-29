@@ -10,7 +10,7 @@ export interface EventRecord {
   phone: string | null;
   phoneSource: "webhook" | "cache" | "none";
   contactId: string | null;
-  channel: "ghl-text" | "ghl-template" | "ghl-workflow" | "meta" | null;
+  channel: "ghl-text" | "ghl-template" | "ghl-workflow" | "meta" | "ghl-sms" | null;
   inWindow: boolean | null;
   outcome: "sent" | "no_phone" | "ignored" | "error";
   ghlOk: boolean | null;

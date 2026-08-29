@@ -218,10 +218,38 @@ export async function sendGhlTemplate(
   return ghlPostMessage(body);
 }
 
-async function ghlPostMessage(
-  body: Record<string, unknown>
+/**
+ * Envía un SMS SALIENTE a través del Conversation Provider custom de RingCentral
+ * (canal SMS de la sub-cuenta). En vez de llamar a RingCentral directamente, se
+ * publica el mensaje saliente al provider en GHL: GHL lo muestra en el hilo del
+ * contacto Y dispara nuestro webhook `ghl-outbound`, que hace el envío real por
+ * RingCentral UNA sola vez y confirma el estado. Así el dispatcher ve la
+ * notificación automática en la conversación (misma vía que un mensaje manual).
+ *
+ * Requiere el token OAuth de la app dueña del provider (`providerAuthToken`) y
+ * `type: "Custom"` + `conversationProviderId` (igual que el inbound).
+ */
+export async function sendGhlProviderSms(
+  contactId: string,
+  message: string
 ): Promise<{ ok: boolean; status: number; response: unknown }> {
-  const token = process.env.GHL_TOKEN;
+  const providerId =
+    process.env.GHL_CONVERSATION_PROVIDER_ID ?? process.env.GHL_SMS_PROVIDER_ID;
+  const body: Record<string, unknown> = {
+    type: "Custom",
+    contactId,
+    message,
+  };
+  if (providerId) body.conversationProviderId = providerId;
+  const token = await providerAuthToken();
+  return ghlPostMessage(body, token);
+}
+
+async function ghlPostMessage(
+  body: Record<string, unknown>,
+  authToken?: string
+): Promise<{ ok: boolean; status: number; response: unknown }> {
+  const token = authToken ?? process.env.GHL_TOKEN;
   if (!token) throw new Error("GHL_TOKEN no configurado");
 
   const res = await ghlFetch(`${GHL_BASE}/conversations/messages`, {
@@ -420,14 +448,40 @@ export async function getMessageStatusCached(
   return fresh;
 }
 
+/** Canal por el que un contacto se comunicó (para enrutar la respuesta). */
+export type InboundChannel = "sms" | "whatsapp" | "other";
+
+export interface LastInbound {
+  /** epoch ms del mensaje entrante más reciente. */
+  ts: number;
+  /** canal por el que llegó ese entrante. */
+  channel: InboundChannel;
+}
+
+// Provider custom de RingCentral: los inbound que entran por él quedan atados a
+// este id (por si el messageType no trae "SMS" explícito).
+const RC_PROVIDER_ID =
+  process.env.GHL_CONVERSATION_PROVIDER_ID ?? process.env.GHL_SMS_PROVIDER_ID;
+
 /**
- * Devuelve el timestamp (epoch ms) del último mensaje ENTRANTE del contacto
- * (cliente → negocio), o null si no hay. Sirve para saber si la ventana de 24h
- * de WhatsApp está abierta.
+ * Clasifica un mensaje de GHL por su canal. GHL usa `messageType` tipo
+ * `TYPE_WHATSAPP`, `TYPE_SMS`, `TYPE_CUSTOM_PROVIDER_SMS`, etc. El SMS de
+ * RingCentral entra por nuestro Conversation Provider custom (aparece como una
+ * variante de SMS o atado a `RC_PROVIDER_ID`).
  */
-export async function getLastInboundTime(
-  contactId: string
-): Promise<number | null> {
+function classifyInboundChannel(m: any): InboundChannel {
+  const t = String(m?.messageType ?? m?.type ?? "").toUpperCase();
+  if (t.includes("WHATSAPP")) return "whatsapp";
+  if (t.includes("SMS")) return "sms";
+  if (RC_PROVIDER_ID && m?.conversationProviderId === RC_PROVIDER_ID) return "sms";
+  return "other";
+}
+
+/**
+ * Trae los mensajes recientes de la conversación del contacto (del más reciente
+ * al más antiguo). Base compartida para detectar último entrante y su canal.
+ */
+async function fetchRecentMessages(contactId: string): Promise<any[]> {
   const token = process.env.GHL_TOKEN;
   if (!token) throw new Error("GHL_TOKEN no configurado");
   const headers = {
@@ -441,26 +495,48 @@ export async function getLastInboundTime(
   searchUrl.searchParams.set("locationId", GHL_LOCATION_ID);
   searchUrl.searchParams.set("contactId", contactId);
   const convRes = await ghlFetch(searchUrl.toString(), { headers });
-  if (!convRes.ok) return null;
+  if (!convRes.ok) return [];
   const convData: any = await convRes.json();
   const conversationId = convData?.conversations?.[0]?.id;
-  if (!conversationId) return null;
+  if (!conversationId) return [];
 
-  // 2. Mensajes (del más reciente al más antiguo). Busca el 1er entrante.
+  // 2. Mensajes (del más reciente al más antiguo).
   const msgRes = await ghlFetch(
     `${GHL_BASE}/conversations/${conversationId}/messages?limit=20`,
     { headers }
   );
-  if (!msgRes.ok) return null;
+  if (!msgRes.ok) return [];
   const msgData: any = await msgRes.json();
-  const messages: any[] = msgData?.messages?.messages ?? [];
+  return msgData?.messages?.messages ?? [];
+}
+
+/**
+ * Devuelve el último mensaje ENTRANTE del contacto (cliente → negocio) con su
+ * timestamp y canal, o null si no hay. Sirve para (a) la ventana de 24h de
+ * WhatsApp y (b) enrutar la notificación por el mismo canal que usó el cliente.
+ */
+export async function getLastInbound(
+  contactId: string
+): Promise<LastInbound | null> {
+  const messages = await fetchRecentMessages(contactId);
   for (const m of messages) {
     if (m?.direction === "inbound" && m?.dateAdded) {
       const t = Date.parse(m.dateAdded);
-      if (!Number.isNaN(t)) return t;
+      if (!Number.isNaN(t)) return { ts: t, channel: classifyInboundChannel(m) };
     }
   }
   return null;
+}
+
+/**
+ * Timestamp (epoch ms) del último entrante del contacto, o null. Wrapper sobre
+ * getLastInbound para el chequeo de ventana de 24h.
+ */
+export async function getLastInboundTime(
+  contactId: string
+): Promise<number | null> {
+  const last = await getLastInbound(contactId);
+  return last ? last.ts : null;
 }
 
 /**

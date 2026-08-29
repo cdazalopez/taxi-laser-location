@@ -10,6 +10,8 @@ import {
   addContactToWorkflow,
   updateContactVehicleFields,
   isWithin24hWindow,
+  getLastInbound,
+  sendGhlProviderSms,
 } from "@/lib/ghl";
 import { sendWhatsAppText, sendWhatsAppTemplate } from "@/lib/whatsapp";
 import { cachePhoneForJob, getCachedPhoneForJob } from "@/lib/cache";
@@ -255,6 +257,33 @@ async function sendViaGhl(
       });
     } catch (err) {
       console.error(`[taxicaller] update campos vehículo falló (job ${jobId}):`, err);
+    }
+  }
+
+  // 2.5 ENRUTADO POR CANAL DEL CLIENTE (flag ROUTE_BY_INBOUND_CHANNEL=on):
+  //     si el último mensaje que ESCRIBIÓ el cliente fue SMS/RingCentral, la
+  //     notificación sale por SMS (mismo canal + sin ventana de 24h → entrega
+  //     siempre). Se publica al provider custom de GHL, que la muestra en el
+  //     hilo Y dispara ghl-outbound → envío real por RingCentral una sola vez.
+  //     Si fue WhatsApp o no hay entrante, sigue el flujo de WhatsApp de abajo.
+  if (process.env.ROUTE_BY_INBOUND_CHANNEL === "on") {
+    let inboundChannel: "sms" | "whatsapp" | "other" | null = null;
+    try {
+      const last = await getLastInbound(contactId);
+      inboundChannel = last?.channel ?? null;
+    } catch (err) {
+      console.error(`[taxicaller] No se pudo determinar canal entrante (job ${jobId}):`, err);
+    }
+    if (inboundChannel === "sms") {
+      console.log(`[taxicaller] Último canal del cliente = SMS → provider GHL/RingCentral (job ${jobId}, ${event})`);
+      try {
+        const result = await sendGhlProviderSms(contactId, message);
+        return { result, channel: "ghl-sms" as const, contactId, inWindow: null, note: null };
+      } catch (err) {
+        const note = `ghl-sms: ${String((err as Error)?.message ?? err).slice(0, 120)}`;
+        console.error(`[taxicaller] Envío SMS por provider GHL falló (job ${jobId}):`, err);
+        return { result: null, channel: "ghl-sms" as const, contactId, inWindow: null, note };
+      }
     }
   }
 
