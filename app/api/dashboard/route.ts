@@ -7,6 +7,7 @@ import { getTaxiCallerSnapshot } from "@/lib/taxicaller";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 300; // el refresco en background puede tardar >2min
 
 /**
  * API del dashboard unificado (KPIs). Protegida con MONITOR_KEY (?key=...).
@@ -37,17 +38,11 @@ export async function GET(req: Request) {
     getTaxiCallerSnapshot(),
   ]);
 
-  // Refresco throttled: si los datos están viejos, recalcular. La primera vez
-  // (sin agregados) se espera; si ya hay datos, se recalcula en background para
-  // no demorar la carga.
-  if (await shouldRefresh()) {
-    if (aggs.length === 0) {
-      await runAggregation();
-      aggs = await getDays(days);
-    } else {
-      waitUntil(runAggregation());
-    }
-  }
+  // Refresco throttled y SIEMPRE en background (la corrida completa tarda ~2min
+  // y toca mucho la cuota de GHL): la carga nunca se bloquea; el próximo refresco
+  // (auto 60s) ya trae los datos nuevos. El lock por `kpi:lastrun` garantiza una
+  // sola corrida por intervalo aunque haya varios usuarios mirando.
+  if (await shouldRefresh()) waitUntil(runAggregation());
 
   const kpis = summarize(aggs, { user, platform });
 
