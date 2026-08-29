@@ -128,6 +128,37 @@ export async function getTripsTotal(
   }
 }
 
+// ── Conductores EN LÍNEA ahora (por webhooks de turno) ─────────────────────
+// Sorted set: member = driverId, score = epoch ms del último evento "online".
+// Un evento offline lo quita; entradas más viejas que TC_ONLINE_TTL_HOURS se
+// purgan (protege contra eventos "fin de turno" perdidos → sin fantasmas).
+const ONLINE_KEY = "tc:online";
+const ONLINE_TTL_H = Number(process.env.TC_ONLINE_TTL_HOURS ?? 18);
+
+/** Registra un evento de turno de un conductor (online=inicio, offline=fin). */
+export async function recordShiftEvent(driverId: string, online: boolean): Promise<void> {
+  const id = String(driverId ?? "").trim();
+  if (!id) return;
+  try {
+    if (online) await redisCmd(["ZADD", ONLINE_KEY, String(Date.now()), id]);
+    else await redisCmd(["ZREM", ONLINE_KEY, id]);
+  } catch (err) {
+    console.error("[tc-shift] recordShiftEvent falló:", err);
+  }
+}
+
+/** Conductores en línea ahora (purgando los más viejos que el TTL). */
+export async function getOnlineDriverCount(): Promise<number | null> {
+  try {
+    const cutoff = Date.now() - ONLINE_TTL_H * 3600 * 1000;
+    await redisCmd(["ZREMRANGEBYSCORE", ONLINE_KEY, "0", String(cutoff)]);
+    const n = await redisCmd(["ZCARD", ONLINE_KEY]);
+    return Number(n ?? 0) || 0;
+  } catch {
+    return null;
+  }
+}
+
 /** Conductores DISTINTOS con al menos un turno hoy (report shift). */
 export async function getDriversWithShiftToday(companyId: string): Promise<number | null> {
   try {

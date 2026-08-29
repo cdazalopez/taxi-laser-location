@@ -3,7 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { getCounters, getTripDays } from "@/lib/events";
 import { getDays, summarize, shouldRefresh, runAggregation } from "@/lib/kpi";
 import { getMissedCalls } from "@/lib/ringcentral";
-import { getTaxiCallerSnapshot, shouldRefreshTaxiCaller, refreshTaxiCallerSnapshot } from "@/lib/taxicaller";
+import { getTaxiCallerSnapshot, shouldRefreshTaxiCaller, refreshTaxiCallerSnapshot, getOnlineDriverCount } from "@/lib/taxicaller";
 import { authFromRequest } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -31,12 +31,13 @@ export async function GET(req: Request) {
   const platform = url.searchParams.get("platform");
   const days = enumerateDays(from, to);
 
-  let [aggs, counters, trips, missed, taxicaller] = await Promise.all([
+  let [aggs, counters, trips, missed, taxicaller, driversOnline] = await Promise.all([
     getDays(days),
     getCounters(),
     getTripDays(days),
     getMissedCalls(Date.now() - 24 * 3600 * 1000),
     getTaxiCallerSnapshot(),
+    getOnlineDriverCount(),
   ]);
 
   // Refresco throttled y SIEMPRE en background (la corrida completa tarda ~2min
@@ -78,6 +79,7 @@ export async function GET(req: Request) {
     operational: {
       messages: computeTotals(counters),
       trips: { total: tripsTotal, byDay: trips, today: trips[todayET()] ?? 0 },
+      driversOnline,
       missedCalls: missed,
       savings: computeSavings(counters),
       taxicaller,
