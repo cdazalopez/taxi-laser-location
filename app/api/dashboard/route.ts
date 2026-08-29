@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import { waitUntil } from "@vercel/functions";
 import { getCounters, getTripDays } from "@/lib/events";
-import { getDays, summarize } from "@/lib/kpi";
+import { getDays, summarize, shouldRefresh, runAggregation } from "@/lib/kpi";
 import { getMissedCalls } from "@/lib/ringcentral";
 import { getTaxiCallerSnapshot } from "@/lib/taxicaller";
 
@@ -28,13 +29,25 @@ export async function GET(req: Request) {
   const platform = url.searchParams.get("platform");
   const days = enumerateDays(from, to);
 
-  const [aggs, counters, trips, missed, taxicaller] = await Promise.all([
+  let [aggs, counters, trips, missed, taxicaller] = await Promise.all([
     getDays(days),
     getCounters(),
     getTripDays(days),
     getMissedCalls(Date.now() - 24 * 3600 * 1000),
     getTaxiCallerSnapshot(),
   ]);
+
+  // Refresco throttled: si los datos están viejos, recalcular. La primera vez
+  // (sin agregados) se espera; si ya hay datos, se recalcula en background para
+  // no demorar la carga.
+  if (await shouldRefresh()) {
+    if (aggs.length === 0) {
+      await runAggregation();
+      aggs = await getDays(days);
+    } else {
+      waitUntil(runAggregation());
+    }
+  }
 
   const kpis = summarize(aggs, { user, platform });
 

@@ -199,6 +199,30 @@ export async function aggregateWindow(
   return { days: Array.from(targetDays), conversations: convs.length, responses, inbound };
 }
 
+// ── Refresco on-demand con throttle (para planes sin cron frecuente) ───────
+const LASTRUN_KEY = "kpi:lastrun";
+const MIN_INTERVAL_MS = Number(process.env.KPI_MIN_INTERVAL_SEC ?? 300) * 1000;
+
+/** ¿Toca recalcular? (último run hace más de KPI_MIN_INTERVAL_SEC). */
+export async function shouldRefresh(): Promise<boolean> {
+  try {
+    const v = await redisCmd(["GET", LASTRUN_KEY]);
+    return Date.now() - (Number(v ?? 0) || 0) > MIN_INTERVAL_MS;
+  } catch {
+    return true;
+  }
+}
+
+/** Reclama el slot (marca el run) y recomputa la ventana. */
+export async function runAggregation(windowDays?: number) {
+  try {
+    await redisCmd(["SET", LASTRUN_KEY, String(Date.now())]);
+  } catch {
+    /* si el marcado falla igual corremos */
+  }
+  return aggregateWindow(windowDays);
+}
+
 /** Lee los agregados de una lista de días (los ausentes se omiten). */
 export async function getDays(days: string[]): Promise<DayAgg[]> {
   const out: DayAgg[] = [];
