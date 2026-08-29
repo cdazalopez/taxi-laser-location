@@ -554,3 +554,180 @@ export async function isWithin24hWindow(contactId: string): Promise<boolean> {
     return false;
   }
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Lecturas para KPIs de dispatchers (agregador). Todo READ-ONLY sobre GHL.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Plataforma de un mensaje de GHL (para KPIs por canal). */
+export type Platform = "sms" | "whatsapp" | "call" | "email" | "other";
+
+/** Clasifica cualquier mensaje (in/out) de GHL por plataforma. */
+export function classifyPlatform(m: any): Platform {
+  const t = String(m?.messageType ?? m?.type ?? "").toUpperCase();
+  if (t.includes("WHATSAPP")) return "whatsapp";
+  if (t.includes("SMS")) return "sms";
+  if (t.includes("CALL")) return "call";
+  if (t.includes("EMAIL")) return "email";
+  if (RC_PROVIDER_ID && m?.conversationProviderId === RC_PROVIDER_ID) return "sms";
+  return "other";
+}
+
+function ghlHeaders(): Record<string, string> {
+  const token = process.env.GHL_TOKEN;
+  if (!token) throw new Error("GHL_TOKEN no configurado");
+  return {
+    Authorization: `Bearer ${token}`,
+    Version: "2021-07-28",
+    Accept: "application/json",
+  };
+}
+
+export interface ConversationRef {
+  id: string;
+  contactId: string | null;
+  lastMessageMs: number | null;
+}
+
+/** epoch ms desde un valor que GHL entrega como número (ms) o ISO string. */
+function toMs(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const t = Date.parse(v);
+    if (!Number.isNaN(t)) return t;
+  }
+  return null;
+}
+
+/**
+ * Enumera conversaciones de la location ordenadas por último mensaje (desc),
+ * paginando hasta cubrir `sinceMs` o alcanzar `max`. Para el agregador de KPIs.
+ * GET /conversations/search?locationId=&sortBy=last_message_date&sort=desc
+ */
+export async function listConversations(
+  opts: { sinceMs?: number; max?: number } = {}
+): Promise<ConversationRef[]> {
+  const headers = ghlHeaders();
+  const max = opts.max ?? 800;
+  const sinceMs = opts.sinceMs ?? 0;
+  const out: ConversationRef[] = [];
+  let startAfterDate: number | undefined;
+
+  for (let page = 0; page < 30 && out.length < max; page++) {
+    const url = new URL(`${GHL_BASE}/conversations/search`);
+    url.searchParams.set("locationId", GHL_LOCATION_ID);
+    url.searchParams.set("sortBy", "last_message_date");
+    url.searchParams.set("sort", "desc");
+    url.searchParams.set("limit", "100");
+    if (startAfterDate) url.searchParams.set("startAfterDate", String(startAfterDate));
+
+    const res = await ghlFetch(url.toString(), { headers });
+    if (!res.ok) {
+      console.error(`[ghl] listConversations falló (${res.status})`);
+      break;
+    }
+    const data: any = await res.json();
+    const convs: any[] = data?.conversations ?? [];
+    if (!convs.length) break;
+
+    let oldestMs: number | null = null;
+    for (const c of convs) {
+      const lm = toMs(c?.lastMessageDate ?? c?.dateUpdated);
+      oldestMs = lm;
+      out.push({ id: c.id, contactId: c?.contactId ?? null, lastMessageMs: lm });
+    }
+    // Si la conversación más vieja de la página ya cae antes de la ventana, parar.
+    if (oldestMs !== null && oldestMs < sinceMs) break;
+    if (oldestMs === null) break;
+    startAfterDate = oldestMs;
+  }
+  return out.slice(0, max);
+}
+
+export interface NormMessage {
+  id: string;
+  direction: "inbound" | "outbound";
+  ms: number;
+  platform: Platform;
+  userId: string | null;
+}
+
+/**
+ * Mensajes de una conversación dentro de [sinceMs, now], normalizados y
+ * ordenados ASC por tiempo. Pagina hacia atrás hasta cubrir la ventana.
+ * GET /conversations/{id}/messages?limit=100[&lastMessageId=]
+ */
+export async function getConversationMessages(
+  conversationId: string,
+  opts: { sinceMs?: number; maxPages?: number } = {}
+): Promise<NormMessage[]> {
+  const headers = ghlHeaders();
+  const sinceMs = opts.sinceMs ?? 0;
+  const maxPages = opts.maxPages ?? 5;
+  const acc: NormMessage[] = [];
+  let lastMessageId: string | undefined;
+
+  for (let page = 0; page < maxPages; page++) {
+    const url = new URL(`${GHL_BASE}/conversations/${conversationId}/messages`);
+    url.searchParams.set("limit", "100");
+    if (lastMessageId) url.searchParams.set("lastMessageId", lastMessageId);
+
+    const res = await ghlFetch(url.toString(), { headers });
+    if (!res.ok) break;
+    const data: any = await res.json();
+    const box = data?.messages ?? {};
+    const arr: any[] = box?.messages ?? [];
+    if (!arr.length) break;
+
+    let reachedOld = false;
+    for (const m of arr) {
+      const ms = toMs(m?.dateAdded);
+      if (ms === null) continue;
+      if (ms < sinceMs) {
+        reachedOld = true;
+        continue;
+      }
+      const dir = String(m?.direction ?? "").toLowerCase();
+      acc.push({
+        id: String(m?.id ?? ""),
+        direction: dir === "outbound" ? "outbound" : "inbound",
+        ms,
+        platform: classifyPlatform(m),
+        userId: m?.userId ? String(m.userId) : null,
+      });
+    }
+    lastMessageId = box?.lastMessageId;
+    if (reachedOld || !box?.nextPage || !lastMessageId) break;
+  }
+
+  return acc.sort((a, b) => a.ms - b.ms);
+}
+
+/**
+ * Mapa userId → nombre de los usuarios de la location (para atribuir KPIs a
+ * personas). Requiere scope users.readonly; si falla, devuelve {} y el
+ * dashboard muestra el userId crudo.
+ * GET /users/?locationId=
+ */
+export async function listLocationUsers(): Promise<Record<string, string>> {
+  try {
+    const url = new URL(`${GHL_BASE}/users/`);
+    url.searchParams.set("locationId", GHL_LOCATION_ID);
+    const res = await ghlFetch(url.toString(), { headers: ghlHeaders() });
+    if (!res.ok) return {};
+    const data: any = await res.json();
+    const users: any[] = data?.users ?? [];
+    const map: Record<string, string> = {};
+    for (const u of users) {
+      const name =
+        u?.name ||
+        [u?.firstName, u?.lastName].filter(Boolean).join(" ") ||
+        u?.email ||
+        u?.id;
+      if (u?.id) map[String(u.id)] = String(name);
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}

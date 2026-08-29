@@ -77,6 +77,47 @@ export async function getCounters(): Promise<Record<string, number>> {
   }
 }
 
+// Contador de viajes completados por día ET (para "viajes del día" del
+// dashboard, mientras se cablea la API de TaxiCaller). Persistente, ~13 meses.
+const TRIP_TZ = process.env.KPI_TZ ?? "America/New_York";
+function etDay(ms: number): string {
+  const dtf = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TRIP_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const p: Record<string, string> = {};
+  for (const part of dtf.formatToParts(new Date(ms))) p[part.type] = part.value;
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
+/** Suma 1 al contador de viajes completados de hoy (ET). No lanza. */
+export async function bumpTripDay(): Promise<void> {
+  const key = `tl:trips:${etDay(Date.now())}`;
+  try {
+    await redisCmd(["INCR", key]);
+    await redisCmd(["EXPIRE", key, 60 * 60 * 24 * 400]);
+  } catch (err) {
+    console.error("[events] bumpTripDay falló:", err);
+  }
+}
+
+/** Lee los contadores de viajes de una lista de días ET → { día: número }. */
+export async function getTripDays(days: string[]): Promise<Record<string, number>> {
+  try {
+    const pairs = await Promise.all(
+      days.map(async (d) => {
+        const v = await redisCmd(["GET", `tl:trips:${d}`]);
+        return [d, Number(v ?? 0) || 0] as const;
+      })
+    );
+    return Object.fromEntries(pairs);
+  } catch {
+    return {};
+  }
+}
+
 /** Devuelve los últimos `n` eventos (más recientes primero). */
 export async function getRecentEvents(n = 200): Promise<EventRecord[]> {
   try {

@@ -15,7 +15,7 @@ import {
 } from "@/lib/ghl";
 import { sendWhatsAppText, sendWhatsAppTemplate } from "@/lib/whatsapp";
 import { cachePhoneForJob, getCachedPhoneForJob } from "@/lib/cache";
-import { recordEvent, bumpCounters, type EventRecord } from "@/lib/events";
+import { recordEvent, bumpCounters, bumpTripDay, type EventRecord } from "@/lib/events";
 
 // Runtime Node.js (no edge) para fetch completo.
 export const runtime = "nodejs";
@@ -138,9 +138,11 @@ async function processEvent(event: string, jobId: string, payload: any) {
   }
 
   if (res.ok) {
-    console.log(`[taxicaller] WhatsApp (${sent.channel}) enviado (job ${jobId}, ${event})`);
+    console.log(`[taxicaller] Notificación (${sent.channel}) enviada (job ${jobId}, ${event})`);
     // Contadores acumulados históricos (para total enviados + estimación de costo).
     void bumpCounters(["total", `ch:${sent.channel}`, `ev:${event}`]);
+    // Viaje completado → suma al contador diario de viajes.
+    if (event === "job_marked_as_delivered") void bumpTripDay();
   } else {
     console.error(
       `[taxicaller] Envío WhatsApp (${sent.channel}) falló (${res.status}) job ${jobId}:`,

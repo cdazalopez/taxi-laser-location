@@ -119,3 +119,44 @@ export async function sendRingCentralSms(
   const response = await res.json().catch(() => null);
   return { ok: res.ok, status: res.status, response };
 }
+
+/**
+ * Cuenta llamadas ENTRANTES perdidas desde `sinceMs` usando el call-log de
+ * RingCentral (requiere scope ReadCallLog en la app). Intenta a nivel cuenta y
+ * cae a nivel extensión si no hay permiso de admin (403).
+ * GET /restapi/v1.0/account/~/call-log?direction=Inbound&type=Voice&view=Simple
+ *
+ * Nunca lanza: devuelve {missed,total,ok} para no tumbar el dashboard.
+ */
+export async function getMissedCalls(
+  sinceMs: number
+): Promise<{ missed: number; total: number; ok: boolean }> {
+  try {
+    const token = await getRingCentralToken();
+    const dateFrom = new Date(sinceMs).toISOString();
+    const qs = `direction=Inbound&type=Voice&view=Simple&perPage=1000&dateFrom=${encodeURIComponent(dateFrom)}`;
+
+    const fetchLog = async (path: string) =>
+      fetch(`${RC_SERVER}/restapi/v1.0/${path}/call-log?${qs}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        cache: "no-store",
+      });
+
+    let res = await fetchLog("account/~");
+    if (res.status === 403) res = await fetchLog("account/~/extension/~");
+    if (!res.ok) {
+      console.error(`[rc] call-log falló (${res.status})`);
+      return { missed: 0, total: 0, ok: false };
+    }
+    const data: any = await res.json();
+    const records: any[] = data?.records ?? [];
+    // "Missed" y "Voicemail" cuentan como no atendidas.
+    const missed = records.filter((r) =>
+      /missed|voicemail|no answer/i.test(String(r?.result ?? ""))
+    ).length;
+    return { missed, total: records.length, ok: true };
+  } catch (err) {
+    console.error("[rc] getMissedCalls error:", err);
+    return { missed: 0, total: 0, ok: false };
+  }
+}
