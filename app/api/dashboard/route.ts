@@ -4,6 +4,7 @@ import { getCounters, getTripDays } from "@/lib/events";
 import { getDays, summarize, shouldRefresh, runAggregation } from "@/lib/kpi";
 import { getMissedCalls } from "@/lib/ringcentral";
 import { getTaxiCallerSnapshot, shouldRefreshTaxiCaller, refreshTaxiCallerSnapshot } from "@/lib/taxicaller";
+import { authFromRequest } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,8 +20,8 @@ export const maxDuration = 300; // el refresco en background puede tardar >2min
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const key = url.searchParams.get("key");
-  if (!process.env.MONITOR_KEY || key !== process.env.MONITOR_KEY) {
+  const auth = authFromRequest(req);
+  if (!auth) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
@@ -68,6 +69,7 @@ export async function GET(req: Request) {
   const tripsTotal = Object.values(trips).reduce((a, b) => a + b, 0);
 
   return NextResponse.json({
+    session: { name: auth.name, role: auth.role },
     range: { from, to, days: days.length },
     coverage,
     filters: { user: user || null, platform: platform || null },
