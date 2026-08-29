@@ -68,34 +68,45 @@ export async function taxicallerGet(
 
 export interface TaxiCallerSnapshot {
   ok: boolean;
-  activeVehicles: number | null;
-  avgRating: number | null;
-  tripsToday: number | null;
+  activeVehicles: number | null; // vehículos con active=1 en la flota
+  fleetSize: number | null; // total de vehículos registrados
+  avgRating: number | null; // pendiente (vía reports)
+  tripsToday: number | null; // se cuenta por webhooks; aquí null
   note?: string;
 }
 
 /**
- * Snapshot operativo de TaxiCaller. Hoy solo confirma auth; los contadores
- * quedan en null hasta confirmar los endpoints de datos. Al cablearlos, llenar
- * activeVehicles/avgRating/tripsToday con `taxicallerGet(...)`.
+ * Snapshot operativo de TaxiCaller.
+ *   GET /company/{id}/vehicle/list → { list:[{active,...}] } → activos de la flota.
+ * Rating y viajes históricos requieren generar reports (/reports/typed/generate),
+ * pendiente de cablear el schema del POST.
  */
 export async function getTaxiCallerSnapshot(): Promise<TaxiCallerSnapshot> {
+  const base: TaxiCallerSnapshot = {
+    ok: false,
+    activeVehicles: null,
+    fleetSize: null,
+    avgRating: null,
+    tripsToday: null,
+  };
   try {
     const { companyId } = await getTaxiCallerJwt();
-    return {
-      ok: true,
-      activeVehicles: null,
-      avgRating: null,
-      tripsToday: null,
-      note: `auth OK (company ${companyId}); endpoints de datos por confirmar`,
-    };
+    if (!companyId) return { ...base, note: "sin company id" };
+
+    const veh = await taxicallerGet(`company/${companyId}/vehicle/list`);
+    if (veh.ok && Array.isArray(veh.data?.list)) {
+      const list: any[] = veh.data.list;
+      return {
+        ok: true,
+        activeVehicles: list.filter((v) => v?.active === 1).length,
+        fleetSize: list.length,
+        avgRating: null,
+        tripsToday: null,
+        note: `flota (rating/viajes vía reports, pendiente)`,
+      };
+    }
+    return { ...base, ok: true, note: `auth OK (company ${companyId}); vehicle/list ${veh.status}` };
   } catch (err) {
-    return {
-      ok: false,
-      activeVehicles: null,
-      avgRating: null,
-      tripsToday: null,
-      note: String((err as Error)?.message ?? err).slice(0, 120),
-    };
+    return { ...base, note: String((err as Error)?.message ?? err).slice(0, 120) };
   }
 }

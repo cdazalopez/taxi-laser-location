@@ -143,7 +143,7 @@ export default function Dashboard() {
       <SectionTitle>Operativo</SectionTitle>
       <div style={row}>
         <Tile value={op?.trips?.today ?? "—"} label="Viajes hoy" color="#e5e7eb" sub={`${op?.trips?.total ?? 0} en el rango`} />
-        <Tile value={op?.taxicaller?.activeVehicles ?? "—"} label="Conductores activos" color="#a78bfa" sub={op?.taxicaller?.ok ? (op?.taxicaller?.note ?? "") : "sin conexión"} pending={op?.taxicaller?.activeVehicles == null} />
+        <Tile value={op?.taxicaller?.activeVehicles ?? "—"} label="Vehículos activos" color="#a78bfa" sub={op?.taxicaller?.activeVehicles != null ? `de ${op?.taxicaller?.fleetSize} en flota` : (op?.taxicaller?.ok ? "sin datos" : "sin conexión")} pending={op?.taxicaller?.activeVehicles == null} />
         <Tile value={op?.messages?.totalSent ?? "—"} label="Mensajes enviados (hist.)" color="#60a5fa" sub={`plantilla ${op?.messages?.template ?? 0} · texto ${op?.messages?.freetext ?? 0}`} />
         <Tile value={op?.missedCalls?.ok ? op?.missedCalls?.missed : "—"} label="Llamadas perdidas (24h)" color="#f87171" sub={op?.missedCalls?.ok ? `de ${op?.missedCalls?.total} entrantes` : "scope/permiso RC"} pending={!op?.missedCalls?.ok} />
         <Tile value={op?.taxicaller?.avgRating ?? "—"} label="Calificación promedio" color="#fbbf24" sub="TaxiCaller" pending={op?.taxicaller?.avgRating == null} />
