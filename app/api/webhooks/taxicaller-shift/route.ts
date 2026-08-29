@@ -59,7 +59,7 @@ export async function POST(req: Request) {
 export async function GET(req: Request) {
   // TaxiCaller puede usar GET; si no trae datos, es solo healthcheck.
   const url = new URL(req.url);
-  if (![...url.searchParams.keys()].length) {
+  if (!url.search || url.search === "?") {
     return NextResponse.json({ ok: true, endpoint: "taxicaller-shift-webhook" });
   }
   return handle(req);
