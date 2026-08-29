@@ -159,6 +159,65 @@ export async function getOnlineDriverCount(): Promise<number | null> {
   }
 }
 
+const SESSION_TEMPLATE = Number(process.env.TAXICALLER_SESSION_TEMPLATE ?? 9980);
+
+/**
+ * Reconcilia el set de "en línea" contra el report de sesiones de TaxiCaller:
+ * si un conductor del set ya CERRÓ sesión (custom_6 = fin, posterior a su marca
+ * de online), lo saca. Auto-sana eventos "Shift ended" perdidos → evita
+ * fantasmas / sobreconteo. NO puede sembrar (las sesiones abiertas no salen en
+ * el report); el alta la hace el webhook en tiempo real.
+ */
+export async function reconcileOnlineDrivers(): Promise<{ removed: number; checked: number }> {
+  try {
+    const { companyId, token } = await getTaxiCallerJwt();
+    if (!companyId) return { removed: 0, checked: 0 };
+
+    const body = {
+      company_id: Number(companyId),
+      report_type: "user_session",
+      output_format: "json",
+      template_id: SESSION_TEMPLATE,
+      search_query: { period: { "@type": "custom", start: `${etDateStr(-1)}T00:00:00`, end: `${etDateStr(1)}T00:00:00` } },
+    };
+    const res = await fetch(`${TC_BASE}/reports/typed/generate`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    });
+    if (!res.ok) return { removed: 0, checked: 0 };
+    const data: any = await res.json();
+    const rows: any[] = data?.rows ?? [];
+
+    // driverId → fin de sesión más reciente (ms)
+    const maxEnd: Record<string, number> = {};
+    for (const r of rows) {
+      const id = String(r?.custom_2 ?? "").trim();
+      const end = Number(r?.custom_6) || 0;
+      if (id && end) maxEnd[id] = Math.max(maxEnd[id] ?? 0, end);
+    }
+
+    const arr = (await redisCmd(["ZRANGE", ONLINE_KEY, "0", "-1", "WITHSCORES"])) as string[] | null;
+    if (!Array.isArray(arr)) return { removed: 0, checked: 0 };
+
+    let removed = 0, checked = 0;
+    for (let i = 0; i < arr.length; i += 2) {
+      const id = arr[i];
+      const score = Number(arr[i + 1]) || 0;
+      checked++;
+      // Cerró DESPUÉS de su marca de online → ya no está en línea.
+      if (maxEnd[id] && maxEnd[id] > score) {
+        await redisCmd(["ZREM", ONLINE_KEY, id]);
+        removed++;
+      }
+    }
+    return { removed, checked };
+  } catch {
+    return { removed: 0, checked: 0 };
+  }
+}
+
 /** Conductores DISTINTOS con al menos un turno hoy (report shift). */
 export async function getDriversWithShiftToday(companyId: string): Promise<number | null> {
   try {
@@ -233,12 +292,19 @@ async function buildSnapshot(): Promise<TaxiCallerSnapshot> {
   }
 }
 
-/** Reconstruye y cachea el snapshot (Redis). */
+/** Reconstruye y cachea el snapshot (Redis) + reconcilia el set de en-línea. */
 export async function refreshTaxiCallerSnapshot(): Promise<TaxiCallerSnapshot> {
   const snap = await buildSnapshot();
   try {
     await redisCmd(["SET", SNAP_KEY, JSON.stringify(snap), "EX", SNAP_TTL]);
     await redisCmd(["SET", SNAP_TS, String(Date.now()), "EX", SNAP_TTL]);
+  } catch {
+    /* no-op */
+  }
+  // Auto-sana el conteo en vivo (quita conductores que ya cerraron sesión).
+  try {
+    const rec = await reconcileOnlineDrivers();
+    if (rec.removed) console.log(`[tc-online] reconcile: -${rec.removed} de ${rec.checked}`);
   } catch {
     /* no-op */
   }
