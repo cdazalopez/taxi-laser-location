@@ -32,11 +32,18 @@ async function handle(req: Request) {
 
   console.log("[tc-shift] recibido:", JSON.stringify({ query, body }).slice(0, 700));
 
-  const driverId = String(
-    all.driver ?? all.driver_id ?? all.driverId ?? all.driverid ??
-    all.user_id ?? all.userId ?? all.uid ?? all.id ??
-    (typeof all.driver === "object" ? all.driver?.id : "") ?? ""
-  ).trim();
+  // Toma el primer identificador que REALMENTE resolvió (ignora plantillas sin
+  // resolver como "[escape(...)]" o "{{...}}", y vacíos/null).
+  const isValid = (v: any) =>
+    typeof v === "string" && v.trim() !== "" &&
+    !/\[escape|\{\{|^null$|^undefined$/i.test(v.trim());
+  const candidates = [
+    all.driver_id, all.driverId, all.driverid, all.user_id, all.userId,
+    all.uid, all.id, all.shift_driver_id,
+    typeof all.driver === "string" ? all.driver : all.driver?.id,
+    all.driver_name, all.user_name, all.name,
+  ];
+  const driverId = (candidates.find(isValid) ?? "").toString().trim();
 
   const evRaw = String(all.event ?? all.type ?? all.status ?? all.action ?? "").toLowerCase();
   const online = /start|begin|login|logon|online|on[_-]?duty|open|available|active/.test(evRaw);
