@@ -129,7 +129,8 @@ export function listDays(fromMs: number, toMs: number): string[] {
  * Devuelve un resumen de la corrida para logging.
  */
 export async function aggregateWindow(
-  windowDays = Number(process.env.KPI_WINDOW_DAYS ?? 2)
+  windowDays = Number(process.env.KPI_WINDOW_DAYS ?? 2),
+  maxConversations = Number(process.env.KPI_MAX_CONVERSATIONS ?? 800)
 ): Promise<{ days: string[]; conversations: number; responses: number; inbound: number }> {
   const now = Date.now();
   const targetDays = new Set<string>();
@@ -140,7 +141,7 @@ export async function aggregateWindow(
 
   const [users, convs] = await Promise.all([
     listLocationUsers(),
-    listConversations({ sinceMs, max: Number(process.env.KPI_MAX_CONVERSATIONS ?? 800) }),
+    listConversations({ sinceMs, max: maxConversations }),
   ]);
 
   const excluded = new Set(

@@ -26,7 +26,8 @@ async function handle(req: Request) {
   const started = Date.now();
   try {
     const windowDays = Number(url.searchParams.get("days")) || undefined;
-    const result = await aggregateWindow(windowDays);
+    const maxConv = Number(url.searchParams.get("max")) || undefined;
+    const result = await aggregateWindow(windowDays, maxConv);
     const ms = Date.now() - started;
     console.log(`[cron/kpis] OK en ${ms}ms:`, JSON.stringify(result));
     return NextResponse.json({ ok: true, ms, ...result });
