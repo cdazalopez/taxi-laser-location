@@ -12,6 +12,8 @@
  * degradan a `null` (el dashboard muestra "pendiente") si el endpoint no existe.
  */
 
+import { redisCmd } from "@/lib/cache";
+
 const TC_BASE = process.env.TAXICALLER_BASE_URL?.replace(/\/+$/, "") ??
   "https://api.taxicaller.net/api/v1";
 
@@ -70,43 +72,127 @@ export interface TaxiCallerSnapshot {
   ok: boolean;
   activeVehicles: number | null; // vehículos con active=1 en la flota
   fleetSize: number | null; // total de vehículos registrados
-  avgRating: number | null; // pendiente (vía reports)
-  tripsToday: number | null; // se cuenta por webhooks; aquí null
+  avgRating: number | null; // pendiente (no hay plantilla con rating)
+  tripsToday: number | null; // report "Finished jobs"
+  tripsYesterday: number | null;
+  tripsLastWeek: number | null; // mismo día, semana pasada
   note?: string;
 }
 
+const TC_TZ = process.env.KPI_TZ ?? "America/New_York";
+const TRIPS_TEMPLATE = Number(process.env.TAXICALLER_TRIPS_TEMPLATE ?? 19); // "Finished jobs"
+const SNAP_KEY = "tc:snapshot";
+const SNAP_TS = "tc:snapshot:ts";
+const SNAP_TTL = 3600;
+const SNAP_MIN_MS = Number(process.env.TC_MIN_INTERVAL_SEC ?? 600) * 1000;
+
+/** Fecha ET (YYYY-MM-DD) desplazada `offsetDays` desde hoy. */
+function etDateStr(offsetDays: number): string {
+  const dtf = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TC_TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  });
+  const p: Record<string, string> = {};
+  for (const x of dtf.formatToParts(new Date(Date.now() + offsetDays * 86400000))) p[x.type] = x.value;
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
 /**
- * Snapshot operativo de TaxiCaller.
- *   GET /company/{id}/vehicle/list → { list:[{active,...}] } → activos de la flota.
- * Rating y viajes históricos requieren generar reports (/reports/typed/generate),
- * pendiente de cablear el schema del POST.
+ * Total de viajes en un período vía report. Descarga las filas pero solo usa
+ * `results.total`. POST /reports/typed/generate (sub=reports|*).
  */
-export async function getTaxiCallerSnapshot(): Promise<TaxiCallerSnapshot> {
-  const base: TaxiCallerSnapshot = {
-    ok: false,
-    activeVehicles: null,
-    fleetSize: null,
-    avgRating: null,
-    tripsToday: null,
-  };
+export async function getTripsTotal(
+  companyId: string, start: string, end: string
+): Promise<number | null> {
+  try {
+    const { token } = await getTaxiCallerJwt();
+    const body = {
+      company_id: Number(companyId),
+      report_type: "jobs",
+      output_format: "json",
+      template_id: TRIPS_TEMPLATE,
+      search_query: { period: { "@type": "custom", start, end } },
+    };
+    const res = await fetch(`${TC_BASE}/reports/typed/generate`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    return typeof data?.results?.total === "number" ? data.results.total : null;
+  } catch {
+    return null;
+  }
+}
+
+const EMPTY_SNAP: TaxiCallerSnapshot = {
+  ok: false, activeVehicles: null, fleetSize: null, avgRating: null,
+  tripsToday: null, tripsYesterday: null, tripsLastWeek: null,
+};
+
+/** Construye el snapshot desde la API (vehículos + viajes hoy/ayer/semana pasada). */
+async function buildSnapshot(): Promise<TaxiCallerSnapshot> {
   try {
     const { companyId } = await getTaxiCallerJwt();
-    if (!companyId) return { ...base, note: "sin company id" };
+    if (!companyId) return { ...EMPTY_SNAP, note: "sin company id" };
 
-    const veh = await taxicallerGet(`company/${companyId}/vehicle/list`);
+    const [veh, tToday, tYest, tLastWk] = await Promise.all([
+      taxicallerGet(`company/${companyId}/vehicle/list`),
+      getTripsTotal(companyId, `${etDateStr(0)}T00:00:00`, `${etDateStr(1)}T00:00:00`),
+      getTripsTotal(companyId, `${etDateStr(-1)}T00:00:00`, `${etDateStr(0)}T00:00:00`),
+      getTripsTotal(companyId, `${etDateStr(-7)}T00:00:00`, `${etDateStr(-6)}T00:00:00`),
+    ]);
+
+    let activeVehicles: number | null = null;
+    let fleetSize: number | null = null;
     if (veh.ok && Array.isArray(veh.data?.list)) {
       const list: any[] = veh.data.list;
-      return {
-        ok: true,
-        activeVehicles: list.filter((v) => v?.active === 1).length,
-        fleetSize: list.length,
-        avgRating: null,
-        tripsToday: null,
-        note: `flota (rating/viajes vía reports, pendiente)`,
-      };
+      fleetSize = list.length;
+      activeVehicles = list.filter((v) => v?.active === 1).length;
     }
-    return { ...base, ok: true, note: `auth OK (company ${companyId}); vehicle/list ${veh.status}` };
+    return {
+      ok: true, activeVehicles, fleetSize, avgRating: null,
+      tripsToday: tToday, tripsYesterday: tYest, tripsLastWeek: tLastWk, note: "live",
+    };
   } catch (err) {
-    return { ...base, note: String((err as Error)?.message ?? err).slice(0, 120) };
+    return { ...EMPTY_SNAP, note: String((err as Error)?.message ?? err).slice(0, 120) };
   }
+}
+
+/** Reconstruye y cachea el snapshot (Redis). */
+export async function refreshTaxiCallerSnapshot(): Promise<TaxiCallerSnapshot> {
+  const snap = await buildSnapshot();
+  try {
+    await redisCmd(["SET", SNAP_KEY, JSON.stringify(snap), "EX", SNAP_TTL]);
+    await redisCmd(["SET", SNAP_TS, String(Date.now()), "EX", SNAP_TTL]);
+  } catch {
+    /* no-op */
+  }
+  return snap;
+}
+
+/** ¿El snapshot cacheado ya está viejo (> TC_MIN_INTERVAL_SEC)? */
+export async function shouldRefreshTaxiCaller(): Promise<boolean> {
+  try {
+    const v = await redisCmd(["GET", SNAP_TS]);
+    return Date.now() - (Number(v ?? 0) || 0) > SNAP_MIN_MS;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Snapshot cacheado (rápido). Si no hay caché aún, lo construye una vez (bloquea
+ * ~15s la primera vez; se pre-calienta tras el deploy). El refresco periódico lo
+ * dispara el dashboard en background vía refreshTaxiCallerSnapshot().
+ */
+export async function getTaxiCallerSnapshot(): Promise<TaxiCallerSnapshot> {
+  try {
+    const raw = await redisCmd(["GET", SNAP_KEY]);
+    if (typeof raw === "string" && raw.length) return JSON.parse(raw) as TaxiCallerSnapshot;
+  } catch {
+    /* si falla el caché, construir */
+  }
+  return refreshTaxiCallerSnapshot();
 }

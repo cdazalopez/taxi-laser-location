@@ -3,7 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { getCounters, getTripDays } from "@/lib/events";
 import { getDays, summarize, shouldRefresh, runAggregation } from "@/lib/kpi";
 import { getMissedCalls } from "@/lib/ringcentral";
-import { getTaxiCallerSnapshot } from "@/lib/taxicaller";
+import { getTaxiCallerSnapshot, shouldRefreshTaxiCaller, refreshTaxiCallerSnapshot } from "@/lib/taxicaller";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -43,6 +43,9 @@ export async function GET(req: Request) {
   // (auto 60s) ya trae los datos nuevos. El lock por `kpi:lastrun` garantiza una
   // sola corrida por intervalo aunque haya varios usuarios mirando.
   if (await shouldRefresh()) waitUntil(runAggregation());
+  // El snapshot de TaxiCaller (viajes vía reports, pesado) también se refresca en
+  // background con su propio throttle.
+  if (await shouldRefreshTaxiCaller()) waitUntil(refreshTaxiCallerSnapshot());
 
   const kpis = summarize(aggs, { user, platform });
 

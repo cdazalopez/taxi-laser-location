@@ -110,6 +110,12 @@ export default function Dashboard() {
   const r = kpis?.responses;
 
   const preset = (days: number) => { setTo(todayET()); setFrom(addDays(todayET(), -(days - 1))); };
+  const spanDays = (() => {
+    const [ay, am, ad] = from.split("-").map(Number);
+    const [by, bm, bd] = to.split("-").map(Number);
+    return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86400000) + 1;
+  })();
+  const activePreset = to === todayET() ? (spanDays === 1 ? 1 : spanDays === 7 ? 7 : spanDays === 30 ? 30 : null) : null;
 
   return (
     <div style={wrap}>
@@ -121,44 +127,69 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Filtros */}
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 16 }}>
-        <div style={{ display: "flex", gap: 6 }}>
-          {[["Hoy", 1], ["7 días", 7], ["30 días", 30]].map(([lbl, d]) => (
-            <button key={lbl as string} onClick={() => preset(d as number)} style={chip}>{lbl}</button>
-          ))}
+      {/* Filtros — solo afectan la sección "Atención de mensajes" */}
+      <div style={{ background: "#0e1524", border: "1px solid #1f2937", borderRadius: 10, padding: "12px 14px", marginBottom: 18 }}>
+        <div style={{ fontSize: 11, color: "#8b93a3", marginBottom: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>Filtros</span>
+          <span>· solo afectan <b style={{ color: "#93c5fd" }}>Atención de mensajes</b> (la sección Operativo es en vivo / hoy)</span>
         </div>
-        <label style={lbl}>Desde <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} style={dateInput} /></label>
-        <label style={lbl}>Hasta <input type="date" value={to} min={from} max={todayET()} onChange={(e) => setTo(e.target.value)} style={dateInput} /></label>
-        <select value={platform} onChange={(e) => setPlatform(e.target.value)} style={select}>
-          {PLATFORMS.map((p) => <option key={p.v} value={p.v}>{p.label}</option>)}
-        </select>
-        <select value={user} onChange={(e) => setUser(e.target.value)} style={select}>
-          <option value="">Todos los dispatchers</option>
-          {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-        </select>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {([["Hoy", 1], ["Últimos 7 días", 7], ["Últimos 30 días", 30]] as Array<[string, number]>).map(([label, d]) => (
+              <button key={label} onClick={() => preset(d)} style={activePreset === d ? chipActive : chip}>{label}</button>
+            ))}
+          </div>
+          <span style={{ color: "#4b5563" }}>|</span>
+          <label style={lbl}>Desde <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} style={dateInput} /></label>
+          <label style={lbl}>Hasta <input type="date" value={to} min={from} max={todayET()} onChange={(e) => setTo(e.target.value)} style={dateInput} /></label>
+          <span style={{ color: "#4b5563" }}>|</span>
+          <select value={platform} onChange={(e) => setPlatform(e.target.value)} style={select}>
+            {PLATFORMS.map((p) => <option key={p.v} value={p.v}>{p.label}</option>)}
+          </select>
+          <select value={user} onChange={(e) => setUser(e.target.value)} style={select}>
+            <option value="">Todos los dispatchers</option>
+            {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </div>
+        <div style={{ fontSize: 12, color: "#e5e7eb", marginTop: 10 }}>
+          Mostrando <b>{spanDays === 1 && activePreset === 1 ? "hoy" : `${from} → ${to}`}</b>
+          <span style={{ color: "#6b7280" }}> ({spanDays} {spanDays === 1 ? "día" : "días"})</span>
+          {platform && <span style={{ color: "#93c5fd" }}> · {PLATFORM_LABEL[platform] ?? platform}</span>}
+          {user && <span style={{ color: "#a78bfa" }}> · {users.find((u) => u.id === user)?.name ?? "usuario"}</span>}
+        </div>
       </div>
 
-      {/* Fila operativa */}
-      <SectionTitle>Operativo</SectionTitle>
+      {/* Fila operativa — ventana fija (hoy / en vivo / 24h / histórico), NO usa el rango */}
+      <SectionTitle badge="En vivo · hoy" badgeColor="#34d399" hint="Estado del negocio en tiempo real. Estas tarjetas NO cambian con el rango de fechas — cada una indica su ventana arriba a la derecha.">
+        Operativo
+      </SectionTitle>
       <div style={row}>
-        <Tile value={op?.trips?.today ?? "—"} label="Viajes hoy" color="#e5e7eb" sub={`${op?.trips?.total ?? 0} en el rango`} />
-        <Tile value={op?.taxicaller?.activeVehicles ?? "—"} label="Vehículos activos" color="#a78bfa" sub={op?.taxicaller?.activeVehicles != null ? `de ${op?.taxicaller?.fleetSize} en flota` : (op?.taxicaller?.ok ? "sin datos" : "sin conexión")} pending={op?.taxicaller?.activeVehicles == null} />
-        <Tile value={op?.messages?.totalSent ?? "—"} label="Mensajes enviados (hist.)" color="#60a5fa" sub={`plantilla ${op?.messages?.template ?? 0} · texto ${op?.messages?.freetext ?? 0}`} />
-        <Tile value={op?.missedCalls?.ok ? op?.missedCalls?.missed : "—"} label="Llamadas perdidas (24h)" color="#f87171" sub={op?.missedCalls?.ok ? `de ${op?.missedCalls?.total} entrantes` : "scope/permiso RC"} pending={!op?.missedCalls?.ok} />
-        <Tile value={op?.taxicaller?.avgRating ?? "—"} label="Calificación promedio" color="#fbbf24" sub="TaxiCaller" pending={op?.taxicaller?.avgRating == null} />
-        <Tile value={op?.messages ? `$${op?.savings?.total?.toFixed?.(2)}` : "—"} label="Ahorro acumulado" color="#22c55e" sub={`~$${op?.savings?.perMsg}/msg`} />
+        <Tile
+          value={op?.taxicaller?.tripsToday ?? op?.trips?.today ?? "—"} label="Viajes hoy" color="#e5e7eb" windowLabel="hoy"
+          sub={op?.taxicaller?.tripsYesterday != null ? `ayer ${op.taxicaller.tripsYesterday} · sem. pasada ${op?.taxicaller?.tripsLastWeek ?? "—"}` : `${op?.trips?.today ?? 0} contados por webhook`}
+        />
+        <Tile value={op?.taxicaller?.activeVehicles ?? "—"} label="Vehículos activos" color="#a78bfa" windowLabel="en vivo" sub={op?.taxicaller?.activeVehicles != null ? `de ${op?.taxicaller?.fleetSize} en flota` : (op?.taxicaller?.ok ? "sin datos" : "sin conexión")} pending={op?.taxicaller?.activeVehicles == null} />
+        <Tile value={op?.missedCalls?.ok ? op?.missedCalls?.missed : "—"} label="Llamadas perdidas" color="#f87171" windowLabel="24h" sub={op?.missedCalls?.ok ? `de ${op?.missedCalls?.total} entrantes` : "scope/permiso RC"} pending={!op?.missedCalls?.ok} />
+        <Tile value={op?.taxicaller?.avgRating ?? "—"} label="Calificación promedio" color="#fbbf24" windowLabel="7 días" sub="TaxiCaller (pendiente)" pending={op?.taxicaller?.avgRating == null} />
+        <Tile value={op?.messages?.totalSent ?? "—"} label="Mensajes enviados" color="#60a5fa" windowLabel="histórico" sub={`plantilla ${op?.messages?.template ?? 0} · texto ${op?.messages?.freetext ?? 0}`} />
+        <Tile value={op?.messages ? `$${op?.savings?.total?.toFixed?.(2)}` : "—"} label="Ahorro acumulado" color="#22c55e" windowLabel="histórico" sub={`~$${op?.savings?.perMsg}/msg`} />
       </div>
 
-      {/* KPIs de dispatchers */}
-      <SectionTitle>Atención de mensajes {kpis?.filters?.platform ? `· ${PLATFORM_LABEL[kpis.filters.platform] ?? kpis.filters.platform}` : ""}{kpis?.filters?.user ? " · (usuario filtrado)" : ""}</SectionTitle>
+      {/* KPIs de dispatchers — usan el rango + filtros seleccionados */}
+      <SectionTitle
+        badge={activePreset === 1 ? "Hoy" : activePreset === 7 ? "Últimos 7 días" : activePreset === 30 ? "Últimos 30 días" : `${from} → ${to}`}
+        badgeColor="#93c5fd"
+        hint={`Cadencia de atención en el rango y filtros de arriba${kpis?.filters?.platform ? ` · ${PLATFORM_LABEL[kpis.filters.platform] ?? kpis.filters.platform}` : ""}${kpis?.filters?.user ? " · usuario filtrado" : ""}. Derivado de las conversaciones de GHL (SMS + WhatsApp): tiempo entre el mensaje del cliente y la primera respuesta del dispatcher.`}
+      >
+        Atención de mensajes
+      </SectionTitle>
       <div style={row}>
-        <Tile value={kpis?.inbound?.total ?? "—"} label="Mensajes entrantes" color="#e5e7eb" />
-        <Tile value={r?.count ?? "—"} label="Respondidos" color="#60a5fa" />
-        <Tile value={fmtMs(r?.avgMs)} label="Tiempo prom. respuesta" color="#e5e7eb" />
-        <Tile value={fmtMs(r?.p50Ms)} label="Mediana (p50)" color="#a3e635" />
-        <Tile value={fmtMs(r?.p90Ms)} label="p90" color="#fbbf24" />
-        <Tile value={r?.slaPct != null ? `${r.slaPct}%` : "—"} label={`Dentro de SLA (${kpis?.slaSeconds ?? 300}s)`} color={r?.slaPct != null && r.slaPct >= 80 ? "#22c55e" : "#f87171"} sub={`${r?.slaBreaches ?? 0} tardías`} />
+        <Tile value={kpis?.inbound?.total ?? "—"} label="Mensajes entrantes" color="#e5e7eb" windowLabel="rango sel." />
+        <Tile value={r?.count ?? "—"} label="Respondidos" color="#60a5fa" windowLabel="rango sel." />
+        <Tile value={fmtMs(r?.avgMs)} label="Tiempo prom. respuesta" color="#e5e7eb" windowLabel="rango sel." />
+        <Tile value={fmtMs(r?.p50Ms)} label="Mediana (p50)" color="#a3e635" windowLabel="rango sel." />
+        <Tile value={fmtMs(r?.p90Ms)} label="p90" color="#fbbf24" windowLabel="rango sel." />
+        <Tile value={r?.slaPct != null ? `${r.slaPct}%` : "—"} label={`Dentro de SLA (${kpis?.slaSeconds ?? 300}s)`} color={r?.slaPct != null && r.slaPct >= 80 ? "#22c55e" : "#f87171"} sub={`${r?.slaBreaches ?? 0} tardías`} windowLabel="rango sel." />
       </div>
 
       {/* Por usuario */}
@@ -231,13 +262,22 @@ function BarChart({ labels, values, color, dense }: { labels: string[]; values: 
   );
 }
 
-function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <h2 style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: 0.6, color: "#9ca3af", margin: "18px 0 8px" }}>{children}</h2>;
+function SectionTitle({ children, hint, badge, badgeColor }: { children: React.ReactNode; hint?: string; badge?: string; badgeColor?: string }) {
+  return (
+    <div style={{ margin: "22px 0 8px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <h2 style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: 0.6, color: "#e5e7eb", margin: 0 }}>{children}</h2>
+        {badge && <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: badgeColor ?? "#93c5fd", background: `${badgeColor ?? "#93c5fd"}1a`, border: `1px solid ${badgeColor ?? "#93c5fd"}55`, borderRadius: 6, padding: "2px 7px" }}>{badge}</span>}
+      </div>
+      {hint && <div style={{ fontSize: 11.5, color: "#8b93a3", marginTop: 3 }}>{hint}</div>}
+    </div>
+  );
 }
 
-function Tile({ value, label, color, sub, pending }: { value: any; label: string; color?: string; sub?: string; pending?: boolean }) {
+function Tile({ value, label, color, sub, pending, windowLabel }: { value: any; label: string; color?: string; sub?: string; pending?: boolean; windowLabel?: string }) {
   return (
-    <div style={{ background: "#111827", border: `1px solid ${pending ? "#3f2d1a" : "#1f2937"}`, borderRadius: 10, padding: "12px 16px", minWidth: 150, flex: "1 1 150px", opacity: pending ? 0.72 : 1 }}>
+    <div style={{ position: "relative", background: "#111827", border: `1px solid ${pending ? "#3f2d1a" : "#1f2937"}`, borderRadius: 10, padding: "12px 16px", minWidth: 150, flex: "1 1 150px", opacity: pending ? 0.72 : 1 }}>
+      {windowLabel && <div style={{ position: "absolute", top: 9, right: 10, fontSize: 8.5, color: "#6b7280", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600 }}>{windowLabel}</div>}
       <div style={{ fontSize: 24, fontWeight: 700, color: color ?? "#e5e7eb" }}>{value}{pending && <span style={{ fontSize: 10, color: "#f59e0b", marginLeft: 6 }}>pendiente</span>}</div>
       <div style={{ fontSize: 11, color: "#9ca3af", textTransform: "uppercase", letterSpacing: 0.5, marginTop: 2 }}>{label}</div>
       {sub && <div style={{ fontSize: 10, color: "#6b7280", marginTop: 4 }}>{sub}</div>}
@@ -253,6 +293,7 @@ const td: React.CSSProperties = { padding: "7px 10px", whiteSpace: "nowrap" };
 const inputStyle: React.CSSProperties = { width: "100%", padding: "10px 12px", margin: "12px 0", borderRadius: 8, border: "1px solid #374151", background: "#111827", color: "#e5e7eb", fontSize: 15 };
 const btn: React.CSSProperties = { width: "100%", padding: "10px 12px", borderRadius: 8, border: "none", background: "#2563eb", color: "white", fontSize: 15, cursor: "pointer" };
 const chip: React.CSSProperties = { padding: "6px 12px", borderRadius: 20, border: "1px solid #374151", background: "#111827", color: "#e5e7eb", fontSize: 12, cursor: "pointer" };
+const chipActive: React.CSSProperties = { ...chip, background: "#2563eb", borderColor: "#2563eb", color: "white", fontWeight: 700 };
 const select: React.CSSProperties = { padding: "7px 10px", borderRadius: 8, border: "1px solid #374151", background: "#111827", color: "#e5e7eb", fontSize: 13 };
 const dateInput: React.CSSProperties = { padding: "6px 8px", borderRadius: 8, border: "1px solid #374151", background: "#111827", color: "#e5e7eb", fontSize: 13, marginLeft: 6 };
 const lbl: React.CSSProperties = { fontSize: 12, color: "#9ca3af", display: "flex", alignItems: "center" };
