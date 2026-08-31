@@ -30,7 +30,7 @@ async function providerAuthToken(): Promise<string> {
 async function ghlFetch(
   input: string,
   init: RequestInit,
-  retries = 3
+  retries = Number(process.env.GHL_MAX_RETRIES ?? 1)
 ): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(input, { ...init, cache: "no-store" });

@@ -132,6 +132,13 @@ export async function aggregateWindow(
   windowDays = Number(process.env.KPI_WINDOW_DAYS ?? 2),
   maxConversations = Number(process.env.KPI_MAX_CONVERSATIONS ?? 800)
 ): Promise<{ days: string[]; conversations: number; responses: number; inbound: number }> {
+  // Kill switch: el agregador lee MUCHAS conversaciones/mensajes de GHL y puede
+  // agotar la cuota diaria (tumbando las notificaciones a clientes). Con
+  // KPI_DISABLED=on no corre (el dashboard muestra el último agregado cacheado).
+  if (process.env.KPI_DISABLED === "on") {
+    console.log("[kpi] agregación deshabilitada (KPI_DISABLED=on)");
+    return { days: [], conversations: 0, responses: 0, inbound: 0 };
+  }
   const now = Date.now();
   const targetDays = new Set<string>();
   for (let i = 0; i < windowDays; i++) targetDays.add(partsET(now - i * 86400000).day);

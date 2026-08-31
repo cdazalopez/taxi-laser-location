@@ -14,6 +14,7 @@ import {
   sendGhlProviderSms,
 } from "@/lib/ghl";
 import { sendWhatsAppText, sendWhatsAppTemplate } from "@/lib/whatsapp";
+import { sendRingCentralSms } from "@/lib/ringcentral";
 import {
   cachePhoneForJob,
   getCachedPhoneForJob,
@@ -260,11 +261,21 @@ async function sendViaGhl(
 
   if (!contactId) {
     console.error(`[taxicaller] Sin contactId GHL; no se puede enviar (job ${jobId})`);
-    // FALLBACK a Meta directo: cuando GHL rechaza la resolución del contacto
-    // (típicamente 429 por cuota diaria), la plantilla se envía por la Graph API
-    // de Meta, que NO toca GHL. Solo se dispara aquí — cuando de lo contrario no
-    // se enviaría nada. Kill switch: META_FALLBACK=off.
-    if ((process.env.META_FALLBACK ?? "on") !== "off" && process.env.WHATSAPP_TOKEN) {
+    // FALLBACK cuando GHL rechaza la resolución del contacto (típicamente 429 por
+    // cuota). Se envía la notificación por SMS de RingCentral — bypass TOTAL de
+    // GHL y Meta, para no perder el aviso al pasajero. Kill switch: RC_FALLBACK=off.
+    // (El fallback a Meta quedó deshabilitado: su token da 403 sin permisos.)
+    if ((process.env.RC_FALLBACK ?? "on") !== "off") {
+      const to = toE164(normalizedPhone) ?? normalizedPhone;
+      try {
+        console.log(`[taxicaller] Fallback a RingCentral SMS (job ${jobId}, ${event})`);
+        const rc = await sendRingCentralSms(to, message);
+        return { result: rc, channel: "rc-sms" as const, contactId: null, inWindow: null, note: `ghl-fail→rc: ${failReason ?? "sin contactId"}` };
+      } catch (err) {
+        console.error(`[taxicaller] Fallback RC SMS falló (job ${jobId}):`, err);
+      }
+    }
+    if ((process.env.META_FALLBACK ?? "off") === "on" && process.env.WHATSAPP_TOKEN) {
       console.log(`[taxicaller] Fallback a Meta directo (job ${jobId}, ${event})`);
       const meta = await sendViaMeta(event, data, normalizedPhone, message);
       return { ...meta, note: `ghl-fail→meta: ${failReason ?? "sin contactId"}` };
