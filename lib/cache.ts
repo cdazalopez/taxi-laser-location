@@ -61,6 +61,44 @@ export async function getCachedPhoneForJob(
   return typeof result === "string" && result.length ? result : null;
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Caché teléfono → contactId de GHL.
+//
+// Resolver el contacto en GHL cuesta 1-2 llamadas (búsqueda + upsert de
+// respaldo) por CADA evento. Un mismo pasajero repite viajes y un mismo viaje
+// dispara varios eventos (arrival → delivered → cancelled): todos apuntan al
+// mismo contactId. Cachearlo elimina esas llamadas y evita agotar la cuota
+// diaria de la API de GHL (la causa de los 429 que tumbaban los envíos).
+// ───────────────────────────────────────────────────────────────────────────
+
+/** TTL del contactId: 30 días (el id de un contacto de GHL no cambia). */
+const CONTACT_TTL = 60 * 60 * 24 * 30;
+
+/** Guarda el contactId de GHL para un teléfono normalizado. */
+export async function cacheContactIdForPhone(
+  phone: string,
+  contactId: string,
+  ttlSeconds: number = CONTACT_TTL
+): Promise<void> {
+  if (!phone || !contactId) return;
+  await redisCmd(["SET", `ghlcontact:${phone}`, contactId, "EX", ttlSeconds]);
+}
+
+/** Recupera el contactId cacheado para un teléfono, o null si no existe. */
+export async function getCachedContactIdForPhone(
+  phone: string
+): Promise<string | null> {
+  if (!phone) return null;
+  const result = await redisCmd(["GET", `ghlcontact:${phone}`]);
+  return typeof result === "string" && result.length ? result : null;
+}
+
+/** Invalida el contactId cacheado (p.ej. si un envío falla con 404 stale). */
+export async function invalidateContactIdForPhone(phone: string): Promise<void> {
+  if (!phone) return;
+  await redisCmd(["DEL", `ghlcontact:${phone}`]);
+}
+
 /** Indica si el KV está configurado (para logging/diagnóstico). */
 export function cacheEnabled(): boolean {
   return !!(REST_URL && REST_TOKEN);

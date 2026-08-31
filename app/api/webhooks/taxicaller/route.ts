@@ -14,7 +14,12 @@ import {
   sendGhlProviderSms,
 } from "@/lib/ghl";
 import { sendWhatsAppText, sendWhatsAppTemplate } from "@/lib/whatsapp";
-import { cachePhoneForJob, getCachedPhoneForJob } from "@/lib/cache";
+import {
+  cachePhoneForJob,
+  getCachedPhoneForJob,
+  cacheContactIdForPhone,
+  getCachedContactIdForPhone,
+} from "@/lib/cache";
 import { recordEvent, bumpCounters, bumpTripDay, type EventRecord } from "@/lib/events";
 
 // Runtime Node.js (no edge) para fetch completo.
@@ -214,21 +219,32 @@ async function sendViaGhl(
   message: string,
   jobId: string
 ) {
-  // 1. Contacto por teléfono (igual que el TL_04). Se prueba con el valor crudo
-  //    y con el normalizado para maximizar coincidencias.
+  // 0. Caché teléfono → contactId. Un mismo pasajero/viaje resuelve siempre el
+  //    mismo contacto; evitar la búsqueda+upsert por evento reduce el volumen de
+  //    llamadas a GHL (lo que agotaba la cuota diaria → 429 → envíos perdidos).
   let contactId: string | null = null;
   let failReason: string | null = null;
-  try {
-    const contact =
-      (await findGhlContactByPhone(rawPhone)) ??
-      (await findGhlContactByPhone(normalizedPhone));
-    if (contact?.id) {
-      contactId = contact.id;
-      console.log(`[taxicaller] Contacto GHL ${contactId} (job ${jobId})`);
+  const contactFromCache = await getCachedContactIdForPhone(normalizedPhone);
+  if (contactFromCache) {
+    contactId = contactFromCache;
+    console.log(`[taxicaller] contactId GHL desde caché ${contactId} (job ${jobId})`);
+  }
+
+  // 1. Contacto por teléfono (igual que el TL_04). Se prueba con el valor crudo
+  //    y con el normalizado para maximizar coincidencias.
+  if (!contactId) {
+    try {
+      const contact =
+        (await findGhlContactByPhone(rawPhone)) ??
+        (await findGhlContactByPhone(normalizedPhone));
+      if (contact?.id) {
+        contactId = contact.id;
+        console.log(`[taxicaller] Contacto GHL ${contactId} (job ${jobId})`);
+      }
+    } catch (err) {
+      failReason = `lookup: ${String((err as Error)?.message ?? err).slice(0, 120)}`;
+      console.error(`[taxicaller] Búsqueda GHL falló (job ${jobId}):`, err);
     }
-  } catch (err) {
-    failReason = `lookup: ${String((err as Error)?.message ?? err).slice(0, 120)}`;
-    console.error(`[taxicaller] Búsqueda GHL falló (job ${jobId}):`, err);
   }
 
   // 2. Si no existe, lo creamos (upsert) para tener un contactId con que enviar.
@@ -244,7 +260,24 @@ async function sendViaGhl(
 
   if (!contactId) {
     console.error(`[taxicaller] Sin contactId GHL; no se puede enviar (job ${jobId})`);
+    // FALLBACK a Meta directo: cuando GHL rechaza la resolución del contacto
+    // (típicamente 429 por cuota diaria), la plantilla se envía por la Graph API
+    // de Meta, que NO toca GHL. Solo se dispara aquí — cuando de lo contrario no
+    // se enviaría nada. Kill switch: META_FALLBACK=off.
+    if ((process.env.META_FALLBACK ?? "on") !== "off" && process.env.WHATSAPP_TOKEN) {
+      console.log(`[taxicaller] Fallback a Meta directo (job ${jobId}, ${event})`);
+      const meta = await sendViaMeta(event, data, normalizedPhone, message);
+      return { ...meta, note: `ghl-fail→meta: ${failReason ?? "sin contactId"}` };
+    }
     return { result: null, channel: null, contactId: null, inWindow: null, note: failReason };
+  }
+
+  // Persistir el mapeo teléfono → contactId para los próximos eventos/viajes
+  // (fire-and-forget; no bloquea el envío). Si venía del caché, no re-escribe.
+  if (!contactFromCache) {
+    void cacheContactIdForPhone(normalizedPhone, contactId).catch((err) =>
+      console.error(`[taxicaller] cache SET contactId falló (job ${jobId}):`, err)
+    );
   }
 
   // Guardar marca/color/placa en el contacto (SIEMPRE en el arrival, antes de
