@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { healthSnapshot, sendTestAlert } from "@/lib/health";
 import { authFromRequest } from "@/lib/auth";
+import { inboundQueueLen } from "@/lib/cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,6 +42,7 @@ export async function GET(req: Request) {
       failuresLastMin: snap.deliveryFailLastMin,
       threshold: snap.deliveryFailThreshold,
     },
+    inboundQueue: await inboundQueueLen(),
     note: snap.circuitOpen
       ? "Circuito GHL ABIERTO: load-shedding activo (KPIs pausados, notificaciones por SMS de respaldo). Auto-recupera."
       : degraded

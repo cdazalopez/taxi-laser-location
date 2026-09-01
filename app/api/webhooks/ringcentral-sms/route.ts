@@ -1,11 +1,6 @@
 import { NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
-import { normalizePhone, toE164 } from "@/lib/phone";
-import {
-  findGhlContactByPhone,
-  upsertGhlContact,
-  addGhlInboundSms,
-} from "@/lib/ghl";
+import { handleInbound } from "@/lib/inbound-sms";
 
 // Runtime Node.js (no edge) para fetch completo.
 export const runtime = "nodejs";
@@ -18,9 +13,8 @@ export const dynamic = "force-dynamic";
  *   1. Handshake de validación de RingCentral (header `Validation-Token`): al
  *      crear/renovar la subscripción, RC hace un POST con ese header y espera
  *      un 200 que lo devuelva en el mismo header.
- *   2. En cada SMS entrante: extrae número del remitente y cuerpo del mensaje,
- *      busca (o crea) el contacto en GHL por teléfono y registra el mensaje
- *      entrante en la conversación de GHL.
+ *   2. En cada SMS entrante: extrae remitente + cuerpo y lo registra en GHL vía
+ *      `handleInbound` (que ENCOLA y reintenta si GHL falla — cero pérdida).
  *   3. Responde 200 al instante; el trabajo con GHL corre en background.
  */
 export async function POST(req: Request) {
@@ -59,61 +53,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, ignored: true, reason: "no_from_or_text" });
   }
 
-  waitUntil(
-    processInboundSms(fromPhone, text).catch((err) => {
-      console.error(`[rc-sms] Error procesando SMS de ${fromPhone}:`, err);
-    })
-  );
+  waitUntil(handleInbound(fromPhone, text));
 
   return NextResponse.json({ ok: true, accepted: true, type });
-}
-
-async function processInboundSms(rawPhone: string, text: string) {
-  const normalized = normalizePhone(rawPhone);
-  if (!normalized) {
-    console.error(`[rc-sms] Teléfono inválido: "${rawPhone}"`);
-    return;
-  }
-
-  // 1. Busca el contacto (crudo y normalizado para maximizar coincidencias).
-  let contactId: string | null = null;
-  try {
-    const contact =
-      (await findGhlContactByPhone(rawPhone)) ??
-      (await findGhlContactByPhone(toE164(normalized)!));
-    if (contact?.id) {
-      contactId = contact.id;
-      console.log(`[rc-sms] Contacto GHL ${contactId} para ${normalized}`);
-    }
-  } catch (err) {
-    console.error(`[rc-sms] Búsqueda GHL falló (${normalized}):`, err);
-  }
-
-  // 2. Si no existe, lo creamos.
-  if (!contactId) {
-    try {
-      contactId = await upsertGhlContact(toE164(normalized)!);
-      console.log(`[rc-sms] Contacto GHL creado ${contactId} para ${normalized}`);
-    } catch (err) {
-      console.error(`[rc-sms] Upsert GHL falló (${normalized}):`, err);
-    }
-  }
-
-  if (!contactId) {
-    console.error(`[rc-sms] Sin contactId; no se registra el SMS (${normalized})`);
-    return;
-  }
-
-  // 3. Registra el SMS entrante en la conversación de GHL.
-  const res = await addGhlInboundSms(contactId, text);
-  if (res.ok) {
-    console.log(`[rc-sms] SMS entrante registrado en GHL (contacto ${contactId})`);
-  } else {
-    console.error(
-      `[rc-sms] Registro de SMS entrante falló (${res.status}) contacto ${contactId}:`,
-      JSON.stringify(res.response)
-    );
-  }
 }
 
 /** Extrae el número del remitente del payload de RingCentral. */

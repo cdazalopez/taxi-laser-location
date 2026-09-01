@@ -109,6 +109,52 @@ export async function invalidateContactIdForPhone(phone: string): Promise<void> 
   await redisCmd(["DEL", `ghlcontact:${phone}`]);
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Cola de SMS entrantes fallidos (dead-letter). Si GHL rechaza el registro de
+// un SMS entrante (típicamente 429), en vez de PERDER el mensaje del cliente lo
+// encolamos aquí y se reprocesa cuando GHL está sano. Evita el "desaparecen /
+// no se encuentran en la búsqueda" de los entrantes.
+// ───────────────────────────────────────────────────────────────────────────
+const INBOUND_DLQ = "tl:inbound:dlq";
+const INBOUND_DLQ_MAX = 2000;
+
+export interface InboundSms {
+  phone: string;
+  text: string;
+  ts: number;
+  attempts?: number;
+}
+
+/** Encola un SMS entrante que no se pudo registrar (LPUSH, recortado). */
+export async function enqueueInboundSms(item: InboundSms): Promise<void> {
+  try {
+    await redisCmd(["LPUSH", INBOUND_DLQ, JSON.stringify(item)]);
+    await redisCmd(["LTRIM", INBOUND_DLQ, 0, INBOUND_DLQ_MAX - 1]);
+  } catch (err) {
+    console.error("[cache] enqueueInboundSms falló:", err);
+  }
+}
+
+/** Saca el SMS entrante más antiguo de la cola (RPOP), o null si está vacía. */
+export async function dequeueInboundSms(): Promise<InboundSms | null> {
+  try {
+    const raw = await redisCmd(["RPOP", INBOUND_DLQ]);
+    if (typeof raw === "string" && raw.length) return JSON.parse(raw) as InboundSms;
+  } catch {
+    /* vacío o error → null */
+  }
+  return null;
+}
+
+/** Cuántos SMS entrantes hay en la cola (para /api/health y diagnóstico). */
+export async function inboundQueueLen(): Promise<number> {
+  try {
+    return Number(await redisCmd(["LLEN", INBOUND_DLQ])) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 /** Indica si el KV está configurado (para logging/diagnóstico). */
 export function cacheEnabled(): boolean {
   return !!(REST_URL && REST_TOKEN);

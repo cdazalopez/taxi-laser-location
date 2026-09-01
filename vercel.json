@@ -4,6 +4,10 @@
     {
       "path": "/api/cron/kpis",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/reprocess-inbound",
+      "schedule": "30 6 * * *"
     }
   ]
 }
