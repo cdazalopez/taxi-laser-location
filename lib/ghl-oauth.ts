@@ -17,6 +17,7 @@
  * para sobrevivir entre invocaciones/deployments de Vercel.
  */
 import { redisCmd } from "@/lib/cache";
+import { reportGhlAuthFailure } from "@/lib/health";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 const TOKEN_URL = `${GHL_BASE}/oauth/token`;
@@ -143,6 +144,12 @@ async function refreshBaseToken(): Promise<string> {
     const t = await postToken(params);
     await storeBaseTokens(t);
     return t.access_token;
+  } catch (err) {
+    // Token de refresh muerto → el provider queda sin auth hasta re-autorizar.
+    if (/invalid_grant/i.test(String((err as Error)?.message ?? err))) {
+      void reportGhlAuthFailure(String((err as Error)?.message ?? err).slice(0, 200));
+    }
+    throw err;
   } finally {
     if (gotLock) await redisCmd(["DEL", REFRESH_LOCK_KEY]);
   }

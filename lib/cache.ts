@@ -32,14 +32,24 @@ export async function redisCmd(args: (string | number)[]): Promise<unknown> {
     });
     if (!res.ok) {
       console.error(`[cache] comando falló (${res.status}):`, await res.text());
+      notifyRedisError();
       return null;
     }
     const data: any = await res.json();
     return data?.result ?? null;
   } catch (err) {
     console.error("[cache] error:", err);
+    notifyRedisError();
     return null;
   }
+}
+
+// Alerta de Redis caído (import dinámico para evitar ciclo cache↔health;
+// reportRedisError NO usa Redis, así que no recursiona). Fire-and-forget.
+function notifyRedisError(): void {
+  import("@/lib/health")
+    .then((h) => h.reportRedisError())
+    .catch(() => {});
 }
 
 /** Guarda el teléfono del pasajero para un job (con TTL). */

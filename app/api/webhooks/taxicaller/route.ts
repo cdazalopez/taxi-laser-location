@@ -22,6 +22,7 @@ import {
   getCachedContactIdForPhone,
 } from "@/lib/cache";
 import { recordEvent, bumpCounters, bumpTripDay, type EventRecord } from "@/lib/events";
+import { reportDeliveryOutcome } from "@/lib/health";
 
 // Runtime Node.js (no edge) para fetch completo.
 export const runtime = "nodejs";
@@ -135,6 +136,7 @@ async function processEvent(event: string, jobId: string, payload: any) {
 
   const res = sent.result;
   if (!res) {
+    void reportDeliveryOutcome(false); // detección: fallo de entrega
     void recordEvent({
       ...baseRecord(event, jobId, passengerPhone, phoneSource, "error"),
       channel: sent.channel,
@@ -142,6 +144,7 @@ async function processEvent(event: string, jobId: string, payload: any) {
     });
     return;
   }
+  void reportDeliveryOutcome(res.ok); // detección: éxito/fallo de entrega (incluye fallback)
 
   if (res.ok) {
     console.log(`[taxicaller] Notificación (${sent.channel}) enviada (job ${jobId}, ${event})`);

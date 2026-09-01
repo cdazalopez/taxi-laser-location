@@ -22,9 +22,10 @@ export async function GET(req: Request) {
 
   const snap = await healthSnapshot();
 
-  const status = snap.circuitOpen ? "degraded" : "ok";
+  const degraded = snap.circuitOpen || snap.deliveryFailLastMin >= snap.deliveryFailThreshold;
+  const status = degraded ? "degraded" : "ok";
   if (!authed) {
-    // Respuesta pública mínima (200 siempre; el circuito es transitorio y auto-recupera).
+    // Respuesta pública mínima (200 siempre; los problemas son transitorios y auto-recuperan).
     return NextResponse.json({ ok: true, status });
   }
   return NextResponse.json({
@@ -36,8 +37,14 @@ export async function GET(req: Request) {
       requests429PrevMin: snap.ghl429PrevMin,
       threshold: snap.threshold,
     },
+    delivery: {
+      failuresLastMin: snap.deliveryFailLastMin,
+      threshold: snap.deliveryFailThreshold,
+    },
     note: snap.circuitOpen
       ? "Circuito GHL ABIERTO: load-shedding activo (KPIs pausados, notificaciones por SMS de respaldo). Auto-recupera."
-      : "Todo normal.",
+      : degraded
+        ? "Tasa de fallos de entrega elevada — revisar GHL/RingCentral."
+        : "Todo normal.",
   });
 }
