@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { waitUntil } from "@vercel/functions";
 import crypto from "node:crypto";
 import { toE164 } from "@/lib/phone";
 import { sendRingCentralSms } from "@/lib/ringcentral";
@@ -117,36 +118,35 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "bad_phone" }, { status: 400 });
   }
 
-  // 5 + 6. Enviar por RingCentral y confirmar estado a GHL. Se AWAITea el envío
-  // (no background) para poder responder 500 si el envío real falla.
-  try {
-    const res = await sendRingCentralSms(to, text);
+  // 5 + 6. Responder a GHL de INMEDIATO (200) para NO bloquear el campo de
+  // escritura del dispatcher. El envío real por RingCentral y la confirmación de
+  // estado (delivered/failed) corren en background con waitUntil; el estado se
+  // reporta después vía la API de estado del provider, así que la UI de GHL
+  // muestra el ✓ un instante más tarde sin trabar el compose.
+  waitUntil(
+    (async () => {
+      try {
+        const res = await sendRingCentralSms(to, text);
+        if (res.ok) {
+          console.log(
+            `[ghl-outbound] SMS enviado por RingCentral a ${to} (msg ${messageId ?? "?"})`
+          );
+          await confirmStatus(messageId, "delivered");
+        } else {
+          console.error(
+            `[ghl-outbound] Envío RingCentral falló (${res.status}) a ${to}:`,
+            JSON.stringify(res.response)
+          );
+          await confirmStatus(messageId, "failed");
+        }
+      } catch (err) {
+        console.error(`[ghl-outbound] Error enviando SMS a ${to}:`, err);
+        await confirmStatus(messageId, "failed");
+      }
+    })()
+  );
 
-    if (res.ok) {
-      console.log(
-        `[ghl-outbound] SMS enviado por RingCentral a ${to} (msg ${messageId ?? "?"})`
-      );
-      await confirmStatus(messageId, "delivered");
-      return NextResponse.json({ ok: true, to, messageId: messageId ?? null });
-    }
-
-    console.error(
-      `[ghl-outbound] Envío RingCentral falló (${res.status}) a ${to}:`,
-      JSON.stringify(res.response)
-    );
-    await confirmStatus(messageId, "failed");
-    return NextResponse.json(
-      { ok: false, error: "ringcentral_send_failed", status: res.status },
-      { status: 500 }
-    );
-  } catch (err) {
-    console.error(`[ghl-outbound] Error enviando SMS a ${to}:`, err);
-    await confirmStatus(messageId, "failed");
-    return NextResponse.json(
-      { ok: false, error: "send_exception" },
-      { status: 500 }
-    );
-  }
+  return NextResponse.json({ ok: true, accepted: true, to, messageId: messageId ?? null });
 }
 
 /**
