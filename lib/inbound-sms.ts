@@ -15,6 +15,13 @@ import { isGhlCircuitOpen } from "@/lib/health";
  * tuvo éxito (GHL sano), aprovecha para drenar la cola de pendientes.
  */
 export async function handleInbound(rawPhone: string, text: string): Promise<void> {
+  // Camino rápido: si GHL está saturado (circuito abierto), NO intentar registrar
+  // (solo sumaría 429). Encolar directo y salir — se reprocesa al recuperarse.
+  if (await isGhlCircuitOpen()) {
+    await enqueueInboundSms({ phone: rawPhone, text, ts: Date.now() });
+    console.warn(`[rc-sms] circuito GHL abierto → SMS de ${rawPhone} ENCOLADO directo`);
+    return;
+  }
   let ok = false;
   try {
     ok = await registerInboundSms(rawPhone, text);

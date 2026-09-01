@@ -22,7 +22,7 @@ import {
   getCachedContactIdForPhone,
 } from "@/lib/cache";
 import { recordEvent, bumpCounters, bumpTripDay, type EventRecord } from "@/lib/events";
-import { reportDeliveryOutcome } from "@/lib/health";
+import { reportDeliveryOutcome, isGhlCircuitOpen } from "@/lib/health";
 
 // Runtime Node.js (no edge) para fetch completo.
 export const runtime = "nodejs";
@@ -223,7 +223,22 @@ async function sendViaGhl(
   message: string,
   jobId: string
 ) {
-  // 0. Caché teléfono → contactId. Un mismo pasajero/viaje resuelve siempre el
+  // 0.a Camino rápido por circuito: si GHL está saturado (circuito abierto), NO
+  //     tocar GHL (evita 429 + reintentos + delay) y enviar la notificación
+  //     directo por SMS de RingCentral. Kill switch: RC_FALLBACK=off.
+  if ((process.env.RC_FALLBACK ?? "on") !== "off" && (await isGhlCircuitOpen())) {
+    const to = toE164(normalizedPhone) ?? normalizedPhone;
+    try {
+      console.log(`[taxicaller] circuito GHL abierto → SMS directo por RingCentral (job ${jobId}, ${event})`);
+      const rc = await sendRingCentralSms(to, message);
+      return { result: rc, channel: "rc-sms" as const, contactId: null, inWindow: null, note: "circuit-open→rc" };
+    } catch (err) {
+      console.error(`[taxicaller] RC directo (circuito) falló (job ${jobId}):`, err);
+      // si RC falla, sigue el camino normal por si GHL responde
+    }
+  }
+
+  // 0.b Caché teléfono → contactId. Un mismo pasajero/viaje resuelve siempre el
   //    mismo contacto; evitar la búsqueda+upsert por evento reduce el volumen de
   //    llamadas a GHL (lo que agotaba la cuota diaria → 429 → envíos perdidos).
   let contactId: string | null = null;
