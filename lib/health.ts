@@ -96,6 +96,23 @@ async function maybeAlert(msg: string): Promise<void> {
   }
 }
 
+/** Envía una alerta de PRUEBA a todos los ALERT_PHONE (sin debounce). */
+export async function sendTestAlert(): Promise<{ sent: string[]; failed: string[] }> {
+  const phones = (process.env.ALERT_PHONE ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+  const out = { sent: [] as string[], failed: [] as string[] };
+  if (!phones.length) return out;
+  const { sendRingCentralSms } = await import("@/lib/ringcentral");
+  for (const phone of phones) {
+    try {
+      const r = await sendRingCentralSms(phone, "TaxiLaser: prueba de alertas ✅ Este número recibirá avisos si el sistema detecta un problema (ej. rate-limit de GHL).");
+      (r.ok ? out.sent : out.failed).push(phone);
+    } catch {
+      out.failed.push(phone);
+    }
+  }
+  return out;
+}
+
 /** Snapshot para /api/health y el dashboard. */
 export async function healthSnapshot(): Promise<{
   circuitOpen: boolean;

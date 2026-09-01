@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { healthSnapshot } from "@/lib/health";
+import { healthSnapshot, sendTestAlert } from "@/lib/health";
 import { authFromRequest } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -11,8 +11,16 @@ export const dynamic = "force-dynamic";
  * detalle: circuito GHL abierto/cerrado y 429/min.
  */
 export async function GET(req: Request) {
-  const snap = await healthSnapshot();
+  const url = new URL(req.url);
   const authed = !!authFromRequest(req);
+
+  // Disparador de prueba de alertas (solo con clave): ?test=alert
+  if (authed && url.searchParams.get("test") === "alert") {
+    const res = await sendTestAlert();
+    return NextResponse.json({ ok: true, testAlert: res });
+  }
+
+  const snap = await healthSnapshot();
 
   const status = snap.circuitOpen ? "degraded" : "ok";
   if (!authed) {
