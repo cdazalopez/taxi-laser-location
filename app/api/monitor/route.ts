@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getRecentEvents, getCounters } from "@/lib/events";
 import { getMessageStatusCached } from "@/lib/ghl";
+import { isGhlCircuitOpen } from "@/lib/health";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,7 +27,10 @@ export async function GET(req: Request) {
   // Enriquecer los 40 más recientes con estado de entrega real de GHL.
   // Cacheado en Redis: los estados finales no se re-consultan → el auto-refresh
   // del dashboard ya NO golpea la cuota diaria de GHL en cada carga.
-  const toEnrich = events.filter((e) => e.messageId).slice(0, 40);
+  // Load-shedding: si el circuito de GHL está abierto (429 storm), NO enriquecer
+  // (evita añadir llamadas a GHL mientras se recupera).
+  const shed = await isGhlCircuitOpen();
+  const toEnrich = shed ? [] : events.filter((e) => e.messageId).slice(0, 40);
   const statuses = await Promise.all(
     toEnrich.map((e) =>
       getMessageStatusCached(e.messageId!).then((s) => ({ id: e.messageId, ...s }))

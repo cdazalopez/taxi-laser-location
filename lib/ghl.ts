@@ -1,5 +1,6 @@
 import { redisCmd } from "@/lib/cache";
 import { getGhlLocationToken } from "@/lib/ghl-oauth";
+import { reportGhl429 } from "@/lib/health";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID ?? "FmXJ8J0Ccird2AKk8pzQ";
@@ -34,6 +35,7 @@ async function ghlFetch(
 ): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(input, { ...init, cache: "no-store" });
+    if (res.status === 429) void reportGhl429(); // auto-detección: cuenta 429s → circuit breaker
     if (res.status !== 429 || attempt >= retries) return res;
     // Si el 429 es por la CUOTA DIARIA agotada (no por ráfaga), reintentar es
     // inútil (no se restaura hasta el reset del día) y solo quema tiempo/función.

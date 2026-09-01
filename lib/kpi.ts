@@ -5,6 +5,7 @@ import {
   listLocationUsers,
   type Platform,
 } from "@/lib/ghl";
+import { isGhlCircuitOpen } from "@/lib/health";
 
 /**
  * Agregador de KPIs de dispatchers (cadencia de atención) a partir de las
@@ -137,6 +138,12 @@ export async function aggregateWindow(
   // KPI_DISABLED=on no corre (el dashboard muestra el último agregado cacheado).
   if (process.env.KPI_DISABLED === "on") {
     console.log("[kpi] agregación deshabilitada (KPI_DISABLED=on)");
+    return { days: [], conversations: 0, responses: 0, inbound: 0 };
+  }
+  // Load-shedding automático: si el circuito de GHL está abierto (429 storm),
+  // NO corremos el agregador → se libera cuota para los webhooks de clientes.
+  if (await isGhlCircuitOpen()) {
+    console.warn("[kpi] circuito GHL abierto → agregación pausada (load-shedding)");
     return { days: [], conversations: 0, responses: 0, inbound: 0 };
   }
   const now = Date.now();
