@@ -68,17 +68,29 @@ async function tripCircuit(count: number): Promise<void> {
   );
 }
 
-/** Envía UNA alerta por SMS al admin (debounced). Requiere ALERT_PHONE. */
+/**
+ * Envía UNA alerta por SMS a los admin (debounced). `ALERT_PHONE` acepta varios
+ * números separados por coma. Se envía a todos por SMS de RingCentral.
+ */
 async function maybeAlert(msg: string): Promise<void> {
   try {
-    const phone = process.env.ALERT_PHONE;
-    if (!phone) return;
+    const phones = (process.env.ALERT_PHONE ?? "")
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (!phones.length) return;
     const already = await redisCmd(["GET", ALERT_KEY]);
     if (already) return;
     await redisCmd(["SET", ALERT_KEY, "1", "EX", ALERT_DEBOUNCE]);
     const { sendRingCentralSms } = await import("@/lib/ringcentral");
-    await sendRingCentralSms(phone, msg);
-    console.log(`[health] alerta enviada a ${phone}`);
+    for (const phone of phones) {
+      try {
+        await sendRingCentralSms(phone, msg);
+        console.log(`[health] alerta enviada a ${phone}`);
+      } catch (err) {
+        console.error(`[health] alerta a ${phone} falló:`, err);
+      }
+    }
   } catch (err) {
     console.error("[health] alerta falló:", err);
   }
