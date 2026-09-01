@@ -18,7 +18,8 @@ import { redisCmd } from "@/lib/cache";
 
 const THRESHOLD = Number(process.env.HEALTH_429_THRESHOLD ?? 15); // 429/min para abrir
 const CIRCUIT_TTL = Number(process.env.HEALTH_CIRCUIT_TTL_SEC ?? 300); // 5 min abierto
-const ALERT_DEBOUNCE = Number(process.env.HEALTH_ALERT_DEBOUNCE_SEC ?? 900); // 15 min
+const ALERT_DEBOUNCE = Number(process.env.HEALTH_ALERT_DEBOUNCE_SEC ?? 3600); // 1h por tipo
+const GLOBAL_CAP = Number(process.env.HEALTH_ALERT_GLOBAL_SEC ?? 1800); // máx 1 alerta / 30 min (total)
 const DELIVERY_FAIL_THRESHOLD = Number(process.env.HEALTH_DELIVERY_FAIL_THRESHOLD ?? 10); // fallos/min
 
 const CIRCUIT_KEY = "h:ghl:circuit";
@@ -81,26 +82,35 @@ const memDebounce: Record<string, number> = {};
  */
 async function alert(type: string, msg: string, redisless = false): Promise<void> {
   try {
+    if (process.env.ALERTS_ENABLED === "off") return; // kill switch
     const phones = (process.env.ALERT_PHONE ?? "")
       .split(",")
       .map((p) => p.trim())
       .filter(Boolean);
     if (!phones.length) return;
 
-    // Debounce en memoria (siempre).
+    // TOPE GLOBAL anti-flood: como máximo 1 alerta (de cualquier tipo) cada
+    // HEALTH_ALERT_GLOBAL_SEC. El sistema ya se auto-mitiga, así que no hace
+    // falta un SMS por cada tormenta — basta un aviso ocasional.
+    if (Date.now() - (memDebounce.__global ?? 0) < GLOBAL_CAP * 1000) return;
+
+    // Debounce por-tipo en memoria (siempre).
     if (Date.now() - (memDebounce[type] ?? 0) < ALERT_DEBOUNCE * 1000) return;
 
-    // Debounce cross-instancia en Redis, salvo cuando Redis es lo que falla.
+    // Debounce cross-instancia en Redis (por-tipo + tope global), salvo cuando
+    // Redis es lo que falla.
     if (!redisless) {
       try {
-        const k = `${ALERT_KEY}:${type}`;
-        if (await redisCmd(["GET", k])) return;
-        await redisCmd(["SET", k, "1", "EX", ALERT_DEBOUNCE]);
+        if (await redisCmd(["GET", `${ALERT_KEY}:global`])) return;
+        if (await redisCmd(["GET", `${ALERT_KEY}:${type}`])) return;
+        await redisCmd(["SET", `${ALERT_KEY}:${type}`, "1", "EX", ALERT_DEBOUNCE]);
+        await redisCmd(["SET", `${ALERT_KEY}:global`, "1", "EX", GLOBAL_CAP]);
       } catch {
         /* si Redis falla, seguimos con el debounce en memoria */
       }
     }
     memDebounce[type] = Date.now();
+    memDebounce.__global = Date.now();
 
     const { sendRingCentralSms } = await import("@/lib/ringcentral");
     for (const phone of phones) {
