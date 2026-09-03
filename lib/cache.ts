@@ -19,29 +19,38 @@ const DEFAULT_TTL = 60 * 60 * 48;
 
 export async function redisCmd(args: (string | number)[]): Promise<unknown> {
   if (!REST_URL || !REST_TOKEN) return null;
-  try {
-    const res = await fetch(REST_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${REST_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(args),
-      // Evita que el Data Cache de Next.js congele las respuestas de Redis.
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      console.error(`[cache] comando falló (${res.status}):`, await res.text());
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(REST_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${REST_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(args),
+        // Evita que el Data Cache de Next.js congele las respuestas de Redis.
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        console.error(`[cache] comando falló (${res.status}):`, await res.text());
+        notifyRedisError();
+        return null;
+      }
+      const data: any = await res.json();
+      return data?.result ?? null;
+    } catch (err) {
+      if (attempt === 0) {
+        // Reintento único para caídas transitorias de socket/TLS (ECONNRESET, UND_ERR_SOCKET).
+        // No reintentamos errores HTTP (cuota, auth) — esos no se recuperan solos.
+        await new Promise<void>((r) => setTimeout(r, 200));
+        continue;
+      }
+      console.error("[cache] error:", err);
       notifyRedisError();
       return null;
     }
-    const data: any = await res.json();
-    return data?.result ?? null;
-  } catch (err) {
-    console.error("[cache] error:", err);
-    notifyRedisError();
-    return null;
   }
+  return null;
 }
 
 // Alerta de Redis caído (import dinámico para evitar ciclo cache↔health;
