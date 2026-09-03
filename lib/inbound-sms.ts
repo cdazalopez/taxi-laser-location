@@ -1,6 +1,6 @@
 import { normalizePhone, toE164 } from "@/lib/phone";
 import { findGhlContactByPhone, upsertGhlContact, addGhlInboundSms } from "@/lib/ghl";
-import { enqueueInboundSms, dequeueInboundSms } from "@/lib/cache";
+import { enqueueInboundSms, dequeueInboundSms, setInboundChannel } from "@/lib/cache";
 import { isGhlCircuitOpen } from "@/lib/health";
 
 /**
@@ -15,6 +15,12 @@ import { isGhlCircuitOpen } from "@/lib/health";
  * tuvo éxito (GHL sano), aprovecha para drenar la cola de pendientes.
  */
 export async function handleInbound(rawPhone: string, text: string): Promise<void> {
+  // Registrar el canal del cliente = SMS (lo sabemos con certeza aquí, sin
+  // preguntar a GHL). Lo usa el enrutado de notificaciones de TaxiCaller para
+  // responder por SMS. Se graba SIEMPRE, aunque GHL esté caído.
+  const normalized = normalizePhone(rawPhone);
+  if (normalized) await setInboundChannel(normalized, "sms");
+
   // Camino rápido: si GHL está saturado (circuito abierto), NO intentar registrar
   // (solo sumaría 429). Encolar directo y salir — se reprocesa al recuperarse.
   if (await isGhlCircuitOpen()) {

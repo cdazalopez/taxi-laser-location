@@ -20,6 +20,7 @@ import {
   getCachedPhoneForJob,
   cacheContactIdForPhone,
   getCachedContactIdForPhone,
+  getInboundChannel,
 } from "@/lib/cache";
 import { recordEvent, bumpCounters, bumpTripDay, type EventRecord } from "@/lib/events";
 import { reportDeliveryOutcome, isGhlCircuitOpen } from "@/lib/health";
@@ -331,12 +332,21 @@ async function sendViaGhl(
   //     hilo Y dispara ghl-outbound → envío real por RingCentral una sola vez.
   //     Si fue WhatsApp o no hay entrante, sigue el flujo de WhatsApp de abajo.
   if (process.env.ROUTE_BY_INBOUND_CHANNEL === "on") {
-    let inboundChannel: "sms" | "whatsapp" | "other" | null = null;
+    let inboundChannel: string | null = null;
+    // 1) Fuente CONFIABLE: nuestro registro en Redis (lo grabamos cuando el
+    //    cliente escribió por SMS). Sin llamadas a GHL, no se rompe en tormentas.
     try {
-      const last = await getLastInbound(contactId);
-      inboundChannel = last?.channel ?? null;
-    } catch (err) {
-      console.error(`[taxicaller] No se pudo determinar canal entrante (job ${jobId}):`, err);
+      inboundChannel = await getInboundChannel(normalizedPhone);
+    } catch { /* seguimos al fallback */ }
+    // 2) Fallback: leer GHL SOLO si no tenemos registro propio (clientes cuyo
+    //    SMS es anterior a esta feature). Se clasifica por messageType/provider.
+    if (!inboundChannel) {
+      try {
+        const last = await getLastInbound(contactId);
+        inboundChannel = last?.channel ?? null;
+      } catch (err) {
+        console.error(`[taxicaller] No se pudo determinar canal entrante (job ${jobId}):`, err);
+      }
     }
     if (inboundChannel === "sms") {
       console.log(`[taxicaller] Último canal del cliente = SMS → provider GHL/RingCentral (job ${jobId}, ${event})`);

@@ -164,6 +164,35 @@ export async function inboundQueueLen(): Promise<number> {
   }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Último canal ENTRANTE por teléfono. Lo grabamos cuando el cliente escribe (ej.
+// un SMS que llega a nuestro webhook de RingCentral) → sabemos el canal SIN
+// preguntarle a GHL. La notificación de TaxiCaller enruta desde aquí (confiable,
+// cero llamadas a GHL, no se rompe en tormentas de 429).
+// ───────────────────────────────────────────────────────────────────────────
+const CHANNEL_TTL = 60 * 60 * 24 * 45; // 45 días
+
+/** Registra el último canal entrante de un teléfono (ej. "sms"). */
+export async function setInboundChannel(phone: string, channel: string): Promise<void> {
+  if (!phone || !channel) return;
+  try {
+    await redisCmd(["SET", `inchan:${phone}`, channel, "EX", CHANNEL_TTL]);
+  } catch (err) {
+    console.error("[cache] setInboundChannel falló:", err);
+  }
+}
+
+/** Devuelve el último canal entrante registrado para un teléfono, o null. */
+export async function getInboundChannel(phone: string): Promise<string | null> {
+  if (!phone) return null;
+  try {
+    const v = await redisCmd(["GET", `inchan:${phone}`]);
+    return typeof v === "string" && v.length ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Indica si el KV está configurado (para logging/diagnóstico). */
 export function cacheEnabled(): boolean {
   return !!(REST_URL && REST_TOKEN);
