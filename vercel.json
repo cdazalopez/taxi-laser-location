@@ -7,7 +7,7 @@
     },
     {
       "path": "/api/cron/reprocess-inbound",
-      "schedule": "30 6 * * *"
+      "schedule": "*/10 * * * *"
     }
   ]
 }
