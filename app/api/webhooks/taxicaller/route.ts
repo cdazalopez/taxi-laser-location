@@ -371,11 +371,11 @@ async function sendViaGhl(
   const workflowId = workflowIdForEvent(event);
   const templateId = templateIdForEvent(event);
   if (workflowId || templateId) {
-    // El finalizado SIEMPRE va por plantilla UTILITY (workflow), sin importar la
-    // ventana: la detección de 24h contaba cualquier entrante (incl. SMS) y
-    // producía falsos "dentro de ventana" → el texto libre se caía por >24h.
-    const forceTemplate = event === "job_marked_as_delivered";
-    const inWindow = !forceTemplate && (await isWithin24hWindow(contactId));
+    // ROUTE_BY_INBOUND_CHANNEL=on (active) routes SMS-origin passengers to
+    // RingCentral before this point, eliminating the false-positive 24h window
+    // issue that previously caused free-form text to be sent outside the window.
+    // All events now respect the 24h window check.
+    const inWindow = await isWithin24hWindow(contactId);
     if (inWindow) {
       console.log(`[taxicaller] En ventana 24h → texto libre rico (job ${jobId}, ${event})`);
       const result = await sendGhlWhatsApp(contactId, message);
