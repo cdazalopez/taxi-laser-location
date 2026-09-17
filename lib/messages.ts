@@ -27,16 +27,15 @@ export function buildMessage(
 
   switch (event) {
     case "waiting_for_passenger":
-      return `Su Taxi ${make} ${color} con placa ${plate} ha llegado / ${CONTACT}`;
+      return `Su Taxi ${make} ${color} con placa ${plate} ha llegado`;
 
     case "job_marked_as_delivered":
-      // Solo se muestra el precio si viene una tarifa válida > 0; si no, se omite
-      // el "$0.00" que se veía roto para el cliente.
       return fareNum && fareNum > 0
-        ? `Su servicio realizado por la unidad ${make} ha finalizado por $${fareNum.toFixed(2)} / ${CONTACT}`
-        : `Su servicio realizado por la unidad ${make} ha finalizado / ${CONTACT}`;
+        ? `Su servicio realizado por la unidad ${make} ha finalizado por $${fareNum.toFixed(2)}`
+        : `Su servicio realizado por la unidad ${make} ha finalizado`;
 
     case "cancelled_by_company":
+      // Keep the number here — this is a call-to-action directing customers to call/text
       return `Su servicio ha sido cancelado, para solicitarlo nuevamente por favor llame o envie un SMS al ${CONTACT}`;
 
     default:
@@ -71,7 +70,7 @@ export function buildTemplate(
 
   switch (event) {
     case "waiting_for_passenger":
-      // Cuerpo: "Su Taxi {{1}} {{2}} con placa {{3}} ha llegado / 404-596-8232"
+      // Cuerpo: "Su Taxi {{1}} {{2}} con placa {{3}} ha llegado"
       return {
         name: process.env.WHATSAPP_TEMPLATE_ARRIVAL ?? "taxi_ha_llegado_v2",
         language,
@@ -79,7 +78,7 @@ export function buildTemplate(
       };
 
     case "job_marked_as_delivered":
-      // Cuerpo: "Su servicio realizado por la unidad {{1}} ha finalizado por ${{2}} / 404-596-8232"
+      // Cuerpo: "Su servicio realizado por la unidad {{1}} ha finalizado por ${{2}}"
       return {
         name: process.env.WHATSAPP_TEMPLATE_DELIVERED ?? "servicio_finalizado",
         language,
