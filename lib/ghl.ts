@@ -14,12 +14,13 @@ const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID ?? "FmXJ8J0Ccird2AKk8pzQ";
  * token estático GHL_TOKEN (canal SMS default).
  */
 async function providerAuthToken(): Promise<string> {
-  if (process.env.GHL_USE_CONVERSATION_PROVIDER === "on") {
-    return getGhlLocationToken();
-  }
-  const token = process.env.GHL_TOKEN;
-  if (!token) throw new Error("GHL_TOKEN no configurado");
-  return token;
+  return getGhlLocationToken();
+}
+
+/** Token para todas las llamadas generales (contactos, mensajes, conversaciones, KPIs).
+ *  Usa el mismo OAuth con auto-refresh del Conversation Provider — sin PIT estático. */
+async function ghlToken(): Promise<string> {
+  return getGhlLocationToken();
 }
 
 /**
@@ -64,8 +65,7 @@ export interface GhlContact {
 export async function findGhlContactByPhone(
   phone: string
 ): Promise<GhlContact | null> {
-  const token = process.env.GHL_TOKEN;
-  if (!token) throw new Error("GHL_TOKEN no configurado");
+  const token = await ghlToken();
 
   const url = new URL(`${GHL_BASE}/contacts/`);
   url.searchParams.set("locationId", GHL_LOCATION_ID);
@@ -104,8 +104,7 @@ export async function findGhlContactByPhone(
  * POST /contacts/upsert  { locationId, phone }
  */
 export async function upsertGhlContact(phoneE164: string): Promise<string | null> {
-  const token = process.env.GHL_TOKEN;
-  if (!token) throw new Error("GHL_TOKEN no configurado");
+  const token = await ghlToken();
 
   const res = await ghlFetch(`${GHL_BASE}/contacts/upsert`, {
     method: "POST",
@@ -146,8 +145,7 @@ export async function updateContactVehicleFields(
   contactId: string,
   data: { make?: string | null; color?: string | null; plate?: string | null }
 ): Promise<boolean> {
-  const token = process.env.GHL_TOKEN;
-  if (!token) throw new Error("GHL_TOKEN no configurado");
+  const token = await ghlToken();
 
   const customFields = [
     { id: VEHICLE_FIELD_IDS.make, value: (data.make ?? "").toString().trim() },
@@ -251,8 +249,7 @@ async function ghlPostMessage(
   body: Record<string, unknown>,
   authToken?: string
 ): Promise<{ ok: boolean; status: number; response: unknown }> {
-  const token = authToken ?? process.env.GHL_TOKEN;
-  if (!token) throw new Error("GHL_TOKEN no configurado");
+  const token = authToken ?? await ghlToken();
 
   const res = await ghlFetch(`${GHL_BASE}/conversations/messages`, {
     method: "POST",
@@ -372,8 +369,7 @@ export async function addContactToWorkflow(
   contactId: string,
   workflowId: string
 ): Promise<{ ok: boolean; status: number; response: unknown }> {
-  const token = process.env.GHL_TOKEN;
-  if (!token) throw new Error("GHL_TOKEN no configurado");
+  const token = await ghlToken();
 
   const res = await ghlFetch(
     `${GHL_BASE}/contacts/${contactId}/workflow/${workflowId}`,
@@ -397,9 +393,8 @@ export async function addContactToWorkflow(
 export async function getMessageStatus(
   messageId: string
 ): Promise<{ status: string | null; error: string | null }> {
-  const token = process.env.GHL_TOKEN;
-  if (!token) return { status: null, error: null };
   try {
+    const token = await ghlToken();
     const res = await ghlFetch(`${GHL_BASE}/conversations/messages/${messageId}`, {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -484,8 +479,7 @@ function classifyInboundChannel(m: any): InboundChannel {
  * al más antiguo). Base compartida para detectar último entrante y su canal.
  */
 async function fetchRecentMessages(contactId: string): Promise<any[]> {
-  const token = process.env.GHL_TOKEN;
-  if (!token) throw new Error("GHL_TOKEN no configurado");
+  const token = await ghlToken();
   const headers = {
     Authorization: `Bearer ${token}`,
     Version: "2021-07-28",
@@ -575,9 +569,8 @@ export function classifyPlatform(m: any): Platform {
   return "other";
 }
 
-function ghlHeaders(): Record<string, string> {
-  const token = process.env.GHL_TOKEN;
-  if (!token) throw new Error("GHL_TOKEN no configurado");
+async function ghlHeaders(): Promise<Record<string, string>> {
+  const token = await ghlToken();
   return {
     Authorization: `Bearer ${token}`,
     Version: "2021-07-28",
@@ -609,7 +602,7 @@ function toMs(v: unknown): number | null {
 export async function listConversations(
   opts: { sinceMs?: number; max?: number } = {}
 ): Promise<ConversationRef[]> {
-  const headers = ghlHeaders();
+  const headers = await ghlHeaders();
   const max = opts.max ?? 800;
   const sinceMs = opts.sinceMs ?? 0;
   const out: ConversationRef[] = [];
@@ -663,7 +656,7 @@ export async function getConversationMessages(
   conversationId: string,
   opts: { sinceMs?: number; maxPages?: number } = {}
 ): Promise<NormMessage[]> {
-  const headers = ghlHeaders();
+  const headers = await ghlHeaders();
   const sinceMs = opts.sinceMs ?? 0;
   const maxPages = opts.maxPages ?? 5;
   const acc: NormMessage[] = [];
@@ -715,7 +708,8 @@ export async function listLocationUsers(): Promise<Record<string, string>> {
   try {
     const url = new URL(`${GHL_BASE}/users/`);
     url.searchParams.set("locationId", GHL_LOCATION_ID);
-    const res = await ghlFetch(url.toString(), { headers: ghlHeaders() });
+    const headers = await ghlHeaders();
+    const res = await ghlFetch(url.toString(), { headers });
     if (!res.ok) return {};
     const data: any = await res.json();
     const users: any[] = data?.users ?? [];
