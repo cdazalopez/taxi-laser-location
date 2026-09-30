@@ -224,6 +224,20 @@ async function sendViaGhl(
   message: string,
   jobId: string
 ) {
+  // 0. Kill switch: WA_DISABLED=on → omitir todo WhatsApp/GHL y notificar por SMS
+  //    de RingCentral directo. Reversible solo con env var, sin redeploy.
+  if (process.env.WA_DISABLED === "on") {
+    const to = toE164(normalizedPhone) ?? normalizedPhone;
+    try {
+      console.log(`[taxicaller] WA_DISABLED=on → SMS directo RC (job ${jobId}, ${event})`);
+      const rc = await sendRingCentralSms(to, message);
+      return { result: rc, channel: "rc-sms" as const, contactId: null, inWindow: null, note: "wa-disabled→rc" };
+    } catch (err) {
+      console.error(`[taxicaller] WA_DISABLED RC SMS falló (job ${jobId}):`, err);
+      return { result: null, channel: "rc-sms" as const, contactId: null, inWindow: null, note: "wa-disabled→rc-failed" };
+    }
+  }
+
   // 0.a Camino rápido por circuito: si GHL está saturado (circuito abierto), NO
   //     tocar GHL (evita 429 + reintentos + delay) y enviar la notificación
   //     directo por SMS de RingCentral. Kill switch: RC_FALLBACK=off.
